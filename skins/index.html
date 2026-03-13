@@ -261,25 +261,19 @@
                     <input type="text" id="searchInput" placeholder="Поиск по названию...">
                 </div>
                 <div class="sort-buttons">
-                    <button class="sort-btn active" data-sort="date"><i class="fas fa-clock"></i> По дате</button>
-                    <button class="sort-btn" data-sort="name"><i class="fas fa-font"></i> По имени</button>
-                    <button class="sort-btn" data-sort="size"><i class="fas fa-weight-hanging"></i> По размеру</button>
+                    <button class="sort-btn active" data-sort="date">
+                        <i class="fas fa-clock"></i> По дате
+                        <span class="sort-direction" data-dir="desc">↓</span>
+                    </button>
+                    <button class="sort-btn" data-sort="name">
+                        <i class="fas fa-font"></i> По имени
+                        <span class="sort-direction" data-dir="asc">↑</span>
+                    </button>
+                    <button class="sort-btn" data-sort="size">
+                        <i class="fas fa-weight-hanging"></i> По размеру
+                        <span class="sort-direction" data-dir="desc">↓</span>
+                    </button>
                 </div>
-            </div>
-
-            <div class="sort-buttons">
-                <button class="sort-btn active" data-sort="date">
-                    <i class="fas fa-clock"></i> По дате
-                    <span class="sort-direction" data-dir="desc">↓</span>
-                </button>
-                <button class="sort-btn" data-sort="name">
-                    <i class="fas fa-font"></i> По имени
-                    <span class="sort-direction" data-dir="asc">↑</span>
-                </button>
-                <button class="sort-btn" data-sort="size">
-                    <i class="fas fa-weight-hanging"></i> По размеру
-                    <span class="sort-direction" data-dir="desc">↓</span>
-                </button>
             </div>
 
             <div class="stats-bar animate-fade-up delay-2">
@@ -338,6 +332,7 @@
         let currentPage = 1;
         let currentSort = 'date';
         let searchQuery = '';
+        let sortDirection = { date: 'desc', name: 'asc', size: 'desc' };
         const SKINS_PER_PAGE = 10;
 
         // ========== ЗАГРУЗКА СКИНОВ ==========
@@ -825,8 +820,12 @@
                 // Переключаем направление при клике на ту же кнопку
                 if (btn.classList.contains('active')) {
                     sortDirection[sortType] = sortDirection[sortType] === 'asc' ? 'desc' : 'asc';
-                    btn.querySelector('.sort-direction').textContent = 
-                        sortDirection[sortType] === 'asc' ? '↑' : '↓';
+                    // обновляем текст направления внутри кнопки
+                    const dirSpan = btn.querySelector('.sort-direction');
+                    if (dirSpan) {
+                        dirSpan.textContent = sortDirection[sortType] === 'asc' ? '↑' : '↓';
+                        dirSpan.dataset.dir = sortDirection[sortType];
+                    }
                 } else {
                     // Убираем активный класс у всех
                     document.querySelectorAll('.sort-btn').forEach(b => {
@@ -839,6 +838,19 @@
                 applyFiltersAndSort();
             });
         });
+
+        // Синхронизация направления при загрузке
+        function syncSortDirections() {
+            document.querySelectorAll('.sort-btn').forEach(btn => {
+                const sortType = btn.dataset.sort;
+                const dirSpan = btn.querySelector('.sort-direction');
+                if (dirSpan && sortDirection[sortType]) {
+                    dirSpan.textContent = sortDirection[sortType] === 'asc' ? '↑' : '↓';
+                    dirSpan.dataset.dir = sortDirection[sortType];
+                }
+            });
+        }
+        syncSortDirections();
 
         // ========== ЗАПУСК ==========
         loadSkins();
