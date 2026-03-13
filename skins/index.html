@@ -723,7 +723,6 @@
                 return;
             }
         
-            // ===== ТВОЙ НОВЫЙ ТОКЕН =====
             const GITHUB_TOKEN = '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';
             const GITHUB_REPO = 'MENDI213/FiercyLauncher';
             const GITHUB_PATH = 'skins/' + file.name;
@@ -737,38 +736,62 @@
                 reader.onload = async () => {
                     const base64 = reader.result.split(',')[1];
         
-                    // Проверяем токен (просто тест)
-                    console.log('Токен (первые 10 символов):', GITHUB_TOKEN.substring(0, 10) + '...');
+                    // Сначала проверяем, существует ли уже такой файл
+                    let sha = null;
+                    const checkResponse = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_PATH}`, {
+                        headers: {
+                            'Authorization': `token ${GITHUB_TOKEN}`,
+                            'Accept': 'application/vnd.github.v3+json'
+                        }
+                    });
         
-                    // Отправляем запрос к GitHub API
+                    if (checkResponse.ok) {
+                        const existing = await checkResponse.json();
+                        sha = existing.sha; // сохраняем SHA для перезаписи
+                    } else if (checkResponse.status !== 404) {
+                        // Если ошибка не 404 (файл не найден), показываем её
+                        const errData = await checkResponse.json();
+                        throw new Error(errData.message || 'Ошибка при проверке файла');
+                    }
+        
+                    // Отправляем запрос на создание/обновление
+                    const body = {
+                        message: `Добавлен скин ${file.name}`,
+                        content: base64,
+                    };
+                    if (sha) {
+                        body.sha = sha; // добавляем sha для обновления существующего файла
+                    }
+        
                     const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_PATH}`, {
                         method: 'PUT',
                         headers: {
-                            'Authorization': `Bearer ${GITHUB_TOKEN}`, // Можно token или Bearer
+                            'Authorization': `token ${GITHUB_TOKEN}`,
                             'Content-Type': 'application/json',
                             'Accept': 'application/vnd.github.v3+json'
                         },
-                        body: JSON.stringify({
-                            message: `Добавлен скин ${file.name}`,
-                            content: base64,
-                        })
+                        body: JSON.stringify(body)
                     });
         
                     const result = await response.json();
-                    
+        
                     if (response.ok) {
                         showMessage('✅ Скин успешно загружен!', 'success');
                         setTimeout(() => loadSkins(), 2000);
                     } else {
                         console.error('Ошибка от GitHub:', result);
-                        showMessage(`❌ Ошибка: ${result.message || 'Неизвестная ошибка'}`, 'error');
+                        let errorText = `❌ Ошибка: ${result.message || 'Неизвестная ошибка'}`;
+                        if (result.errors) {
+                            errorText += ' (' + result.errors.map(e => e.message).join(', ') + ')';
+                        }
+                        showMessage(errorText, 'error');
                     }
                 };
             } catch (error) {
-                showMessage('❌ Ошибка при загрузке', 'error');
+                showMessage('❌ Ошибка при загрузке: ' + error.message, 'error');
                 console.error('Полная ошибка:', error);
             }
-            
+        
             e.target.value = '';
         });
 
