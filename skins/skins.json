@@ -1,0 +1,22 @@
+{
+  "skins": [
+    {
+      "id": "skin1",
+      "name": "Скин Ниндзя",
+      "author": "MENDI213",
+      "file": "skin1.png"
+    },
+    {
+      "id": "skin2",
+      "name": "Скин Рыцарь",
+      "author": "MENDI213",
+      "file": "skin2.png"
+    },
+    {
+      "id": "skin3",
+      "name": "Скин Стив",
+      "author": "Mojang",
+      "file": "steve.png"
+    }
+  ]
+}
