@@ -1,19 +1,19 @@
 {
   "skins": [
     {
-      "id": "skin1",
+      "id": "bill",
       "name": "Скин Ниндзя",
       "author": "MENDI213",
-      "file": "baron.png"
+      "file": "bill.png"
     },
     {
-      "id": "skin2",
+      "id": "baron",
       "name": "Скин Рыцарь",
       "author": "MENDI213",
       "file": "baron.png"
     },
     {
-      "id": "skin3",
+      "id": "bard",
       "name": "Скин Стив",
       "author": "Mojang",
       "file": "bard.png"
