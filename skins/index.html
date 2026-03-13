@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://apis.google.com/js/api.js"></script>
     <style>
         /* СТИЛИ (оставляем как в предыдущем ответе, они уже хорошие) */
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -266,6 +267,21 @@
                 </div>
             </div>
 
+            <div class="sort-buttons">
+                <button class="sort-btn active" data-sort="date">
+                    <i class="fas fa-clock"></i> По дате
+                    <span class="sort-direction" data-dir="desc">↓</span>
+                </button>
+                <button class="sort-btn" data-sort="name">
+                    <i class="fas fa-font"></i> По имени
+                    <span class="sort-direction" data-dir="asc">↑</span>
+                </button>
+                <button class="sort-btn" data-sort="size">
+                    <i class="fas fa-weight-hanging"></i> По размеру
+                    <span class="sort-direction" data-dir="desc">↓</span>
+                </button>
+            </div>
+
             <div class="stats-bar animate-fade-up delay-2">
                 <div class="stat-item"><div class="stat-value" id="totalSkins">0</div><div class="stat-label">Всего скинов</div></div>
                 <div class="stat-item"><div class="stat-value" id="totalSize">0 МБ</div><div class="stat-label">Общий размер</div></div>
@@ -358,12 +374,20 @@
 
             // Сортировка
             filteredSkins.sort((a, b) => {
+                let result = 0;
                 switch(currentSort) {
-                    case 'date': return b.date - a.date;
-                    case 'name': return a.cleanName.localeCompare(b.cleanName);
-                    case 'size': return b.size - a.size;
-                    default: return b.date - a.date;
+                    case 'date':
+                        result = b.date - a.date;
+                        break;
+                    case 'name':
+                        result = a.cleanName.localeCompare(b.cleanName);
+                        break;
+                    case 'size':
+                        result = b.size - a.size;
+                        break;
                 }
+                // Применяем направление
+                return sortDirection[currentSort] === 'asc' ? -result : result;
             });
 
             currentPage = 1;
@@ -390,7 +414,7 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
 
-        // ========== 2D ПРЕВЬЮ (ПРАВИЛЬНОЕ) ==========
+        // ========== 2D ПРЕВЬЮ (ПРАВИЛЬНОЕ РАСПОЛОЖЕНИЕ) ==========
         function createSkinPreview(skinUrl, canvas) {
             const ctx = canvas.getContext('2d');
             const img = new Image();
@@ -401,21 +425,39 @@
                 canvas.width = 64;
                 canvas.height = 64;
                 ctx.clearRect(0, 0, 64, 64);
-                ctx.imageSmoothingEnabled = false;
+                ctx.imageSmoothingEnabled = false; // для четких пикселей
                 
-                // Рисуем голову (увеличено для превью)
-                ctx.drawImage(img, 8, 8, 8, 8, 20, 4, 24, 24); // Лицо
+                // Голова (лицо) - увеличена для превью
+                ctx.drawImage(img, 8, 8, 8, 8, 20, 4, 24, 24);
                 
-                // Рисуем тело
+                // Головной убор (шляпа) - если есть
+                ctx.drawImage(img, 40, 8, 8, 8, 20, 4, 24, 24);
+                
+                // Тело (перед)
                 ctx.drawImage(img, 20, 20, 8, 12, 24, 28, 16, 24);
                 
-                // Рисуем руки (исправлено положение)
-                ctx.drawImage(img, 44, 20, 4, 12, 8, 28, 8, 24);  // Левая рука
-                ctx.drawImage(img, 52, 20, 4, 12, 48, 28, 8, 24); // Правая рука
+                // Тело (спина - для второго слоя)
+                ctx.drawImage(img, 32, 20, 8, 12, 24, 28, 16, 24);
                 
-                // Рисуем ноги (исправлено положение)
-                ctx.drawImage(img, 4, 20, 4, 12, 20, 52, 8, 24);  // Левая нога
-                ctx.drawImage(img, 20, 52, 4, 12, 36, 52, 8, 24); // Правая нога
+                // РУКИ (ИСПРАВЛЕНО)
+                // Левая рука (перед)
+                ctx.drawImage(img, 44, 20, 4, 12, 8, 28, 8, 24);  // Левая рука (x=8)
+                // Правая рука (перед)
+                ctx.drawImage(img, 52, 20, 4, 12, 48, 28, 8, 24); // Правая рука (x=48)
+                
+                // Второй слой рук (для толстых скинов)
+                ctx.drawImage(img, 44, 36, 4, 12, 8, 28, 8, 24);  // Левая рука (слой)
+                ctx.drawImage(img, 52, 36, 4, 12, 48, 28, 8, 24); // Правая рука (слой)
+                
+                // НОГИ (ИСПРАВЛЕНО)
+                // Левая нога (перед)
+                ctx.drawImage(img, 4, 20, 4, 12, 20, 52, 8, 24);  // Левая нога (x=20)
+                // Правая нога (перед)
+                ctx.drawImage(img, 20, 52, 4, 12, 36, 52, 8, 24); // Правая нога (x=36)
+                
+                // Второй слой ног
+                ctx.drawImage(img, 4, 36, 4, 12, 20, 52, 8, 24);  // Левая нога (слой)
+                ctx.drawImage(img, 20, 52, 4, 12, 36, 52, 8, 24); // Правая нога (слой)
             };
         }
 
@@ -665,8 +707,6 @@
         }
 
         // ========== ЗАГРУЗКА СКИНОВ ==========
-        // ========== РЕАЛЬНАЯ ЗАГРУЗКА НА GITHUB ==========
-        // ========== РЕАЛЬНАЯ ЗАГРУЗКА НА GITHUB ==========
         document.getElementById('skinUpload').addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -756,10 +796,23 @@
         });
 
         document.querySelectorAll('.sort-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentSort = btn.dataset.sort;
+            btn.addEventListener('click', (e) => {
+                const sortType = btn.dataset.sort;
+                
+                // Переключаем направление при клике на ту же кнопку
+                if (btn.classList.contains('active')) {
+                    sortDirection[sortType] = sortDirection[sortType] === 'asc' ? 'desc' : 'asc';
+                    btn.querySelector('.sort-direction').textContent = 
+                        sortDirection[sortType] === 'asc' ? '↑' : '↓';
+                } else {
+                    // Убираем активный класс у всех
+                    document.querySelectorAll('.sort-btn').forEach(b => {
+                        b.classList.remove('active');
+                    });
+                    btn.classList.add('active');
+                }
+                
+                currentSort = sortType;
                 applyFiltersAndSort();
             });
         });
