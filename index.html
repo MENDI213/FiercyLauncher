@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FiercyLauncher | для пидорской rp сборки</title>
+    <!-- Подключаем шрифт Inter и Font Awesome для иконок -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        /* Сброс и базовые настройки */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0a0c0f;
+            color: #fff;
+            line-height: 1.6;
+            overflow-x: hidden;
+            scroll-behavior: smooth;
+        }
+
+        /* Фон с анимированным градиентом и шумом */
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 30% 40%, rgba(70, 130, 200, 0.15) 0%, transparent 40%),
+                        radial-gradient(circle at 70% 60%, rgba(150, 60, 200, 0.12) 0%, transparent 45%),
+                        radial-gradient(circle at 10% 80%, rgba(30, 150, 220, 0.1) 0%, transparent 50%);
+            z-index: -2;
+            animation: backgroundShift 18s ease-in-out infinite alternate;
+        }
+
+        @keyframes backgroundShift {
+            0% { opacity: 0.7; transform: scale(1); }
+            100% { opacity: 1; transform: scale(1.05); }
+        }
+
+        /* Текстура шума для глубины */
+        body::after {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        /* Контейнер */
+        .container {
+            max-width: 1300px;
+            margin: 0 auto;
+            padding: 0 30px;
+        }
+
+        /* Анимации появления */
+        @keyframes fadeUp {
+            0% { opacity: 0; transform: translateY(30px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes fadeIn {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
+        }
+
+        @keyframes float {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-8px); }
+            100% { transform: translateY(0px); }
+        }
+
+        .animate-fade-up {
+            animation: fadeUp 0.9s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+            opacity: 0; /* начальное состояние */
+        }
+
+        .animate-fade-in {
+            animation: fadeIn 1.2s ease forwards;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.2s; }
+        .delay-2 { animation-delay: 0.4s; }
+        .delay-3 { animation-delay: 0.6s; }
+        .delay-4 { animation-delay: 0.8s; }
+
+        /* Хедер */
+        header {
+            padding: 25px 0;
+            backdrop-filter: blur(12px);
+            background: rgba(10, 12, 15, 0.4);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.7rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .logo i {
+            color: #4a9eff;
+            font-size: 2rem;
+            filter: drop-shadow(0 0 10px rgba(74, 158, 255, 0.6));
+        }
+
+        .logo span {
+            background: linear-gradient(135deg, #fff, #b0d0ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 25px;
+            font-weight: 500;
+            align-items: center;
+        }
+
+        .nav-links a {
+            color: rgba(255, 255, 255, 0.75);
+            text-decoration: none;
+            font-size: 1rem;
+            transition: color 0.3s, text-shadow 0.3s;
+            position: relative;
+            padding: 5px 0;
+        }
+
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 0;
+            width: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #4a9eff, #a96eff);
+            transition: width 0.3s ease;
+        }
+
+        .nav-links a:hover {
+            color: #fff;
+            text-shadow: 0 0 8px rgba(74, 158, 255, 0.5);
+        }
+
+        .nav-links a:hover::after {
+            width: 100%;
+        }
+
+        /* Специальные кнопки для скинов и модерации */
+        .nav-link-special {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(74, 158, 255, 0.1);
+            border: 1px solid rgba(74, 158, 255, 0.3);
+            border-radius: 30px;
+            padding: 8px 18px !important;
+            margin-left: 5px;
+        }
+
+        .nav-link-special i {
+            color: #4a9eff;
+            font-size: 1rem;
+        }
+
+        .nav-link-special:hover {
+            background: rgba(74, 158, 255, 0.2);
+            border-color: #4a9eff;
+            transform: translateY(-2px);
+        }
+
+        .nav-link-special:hover::after {
+            display: none;
+        }
+
+        /* Герой секция */
+        .hero {
+            padding: 100px 0 70px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .hero-badge {
+            background: rgba(74, 158, 255, 0.12);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(74, 158, 255, 0.25);
+            border-radius: 60px;
+            padding: 10px 24px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            color: #b0d4ff;
+            margin-bottom: 35px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+            animation: fadeUp 1s ease;
+        }
+
+        .hero h1 {
+            font-size: clamp(3rem, 8vw, 5.2rem);
+            font-weight: 800;
+            line-height: 1.1;
+            letter-spacing: -2px;
+            max-width: 1000px;
+            margin: 0 auto 25px;
+            background: linear-gradient(to right, #ffffff, #c0d4ff, #a6c5ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 4px 20px rgba(74,158,255,0.3));
+        }
+
+        .hero-description {
+            font-size: 1.3rem;
+            color: rgba(255, 255, 255, 0.7);
+            max-width: 700px;
+            margin: 0 auto 45px;
+            font-weight: 400;
+            backdrop-filter: blur(5px);
+        }
+
+        /* Кнопка скачивания — главная звезда */
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 15px;
+            background: linear-gradient(145deg, #1f2b3a, #111a24);
+            border: 1px solid rgba(74, 158, 255, 0.4);
+            padding: 18px 48px;
+            border-radius: 80px;
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: white;
+            text-decoration: none;
+            letter-spacing: 0.5px;
+            box-shadow: 0 25px 40px -12px rgba(0, 120, 255, 0.5), 0 0 0 1px rgba(74,158,255,0.3) inset;
+            transition: all 0.35s cubic-bezier(0.2, 0.9, 0.4, 1);
+            position: relative;
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+            margin-top: 20px;
+            animation: float 5s ease-in-out infinite;
+        }
+
+        .download-btn i {
+            font-size: 2rem;
+            color: #7cb3ff;
+            filter: drop-shadow(0 0 8px #4a9eff);
+            transition: transform 0.3s;
+        }
+
+        .download-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.7s;
+        }
+
+        .download-btn:hover {
+            transform: scale(1.06) translateY(-3px);
+            box-shadow: 0 35px 50px -15px #4a9eff, 0 0 0 2px rgba(110, 180, 255, 0.7) inset;
+            border-color: #6eb4ff;
+        }
+
+        .download-btn:hover i {
+            transform: rotate(5deg) scale(1.1);
+        }
+
+        .download-btn:hover::before {
+            left: 100%;
+        }
+
+        /* Секция особенностей */
+        .features {
+            padding: 120px 0 100px;
+        }
+
+        .section-title {
+            text-align: center;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 70px;
+            background: linear-gradient(135deg, #fff, #b0d4ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 35px;
+        }
+
+        .feature-card {
+            background: rgba(20, 25, 33, 0.5);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 42px;
+            padding: 40px 30px;
+            transition: all 0.4s;
+            box-shadow: 0 25px 45px -20px rgba(0,0,0,0.6);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #4a9eff, #a96eff, transparent);
+            transform: translateX(-100%);
+            transition: transform 0.8s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-12px) scale(1.02);
+            border-color: rgba(74, 158, 255, 0.4);
+            box-shadow: 0 30px 60px -15px #1e3a5f;
+            background: rgba(30, 38, 50, 0.7);
+        }
+
+        .feature-card:hover::after {
+            transform: translateX(100%);
+        }
+
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 25px;
+            background: linear-gradient(145deg, #4a9eff, #9f7aff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: inline-block;
+            filter: drop-shadow(0 0 18px #4a9eff);
+        }
+
+        .feature-card h3 {
+            font-size: 1.9rem;
+            font-weight: 700;
+            margin-bottom: 15px;
+            color: #fff;
+        }
+
+        .feature-card p {
+            color: rgba(255, 255, 255, 0.65);
+            font-size: 1.1rem;
+            line-height: 1.5;
+        }
+
+        /* Новая секция отзывов */
+        .reviews-section {
+            padding: 80px 0 100px;
+            scroll-margin-top: 80px; /* чтобы при навигации хедер не перекрывал */
+        }
+
+        .reviews-section h2 {
+            text-align: center;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 60px;
+            background: linear-gradient(135deg, #fff, #b0d4ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .reviews-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+        }
+
+        .review-card {
+            background: rgba(30, 35, 45, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 30px;
+            padding: 30px;
+            transition: 0.3s;
+            box-shadow: 0 15px 35px -10px rgba(0,0,0,0.5);
+        }
+
+        .review-card:hover {
+            transform: translateY(-8px);
+            border-color: rgba(74, 158, 255, 0.3);
+            box-shadow: 0 20px 40px -10px #1e3f6e;
+        }
+
+        .review-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .review-avatar {
+            width: 55px;
+            height: 55px;
+            background: linear-gradient(145deg, #2a3a50, #1a2535);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            color: #7cb3ff;
+            border: 1px solid rgba(74, 158, 255, 0.3);
+        }
+
+        .review-author h4 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .review-author .stars {
+            color: #ffb83b;
+            letter-spacing: 3px;
+            font-size: 1rem;
+        }
+
+        .review-text {
+            color: rgba(255, 255, 255, 0.75);
+            font-size: 1rem;
+            line-height: 1.6;
+            font-style: italic;
+        }
+
+        .review-text i {
+            color: #4a9eff;
+            opacity: 0.6;
+            margin: 0 5px;
+        }
+
+        /* CTA снизу (дополнительная кнопка) */
+        .cta-section {
+            text-align: center;
+            padding: 70px 0 120px;
+        }
+
+        .cta-section h2 {
+            font-size: 2.8rem;
+            font-weight: 700;
+            margin-bottom: 30px;
+            background: linear-gradient(135deg, #fff, #a0c8ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .secondary-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 15px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            padding: 16px 45px;
+            border-radius: 60px;
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: white;
+            text-decoration: none;
+            backdrop-filter: blur(12px);
+            transition: all 0.3s;
+            box-shadow: 0 15px 30px -10px rgba(0,0,0,0.5);
+        }
+
+        .secondary-btn i {
+            color: #4a9eff;
+            font-size: 1.8rem;
+        }
+
+        .secondary-btn:hover {
+            background: rgba(74, 158, 255, 0.15);
+            border-color: #4a9eff;
+            transform: scale(1.05);
+            box-shadow: 0 0 30px #4a9eff55;
+        }
+
+        /* Футер */
+        footer {
+            border-top: 1px solid rgba(255,255,255,0.03);
+            padding: 35px 0;
+            text-align: center;
+            color: rgba(255,255,255,0.35);
+            font-size: 0.95rem;
+            backdrop-filter: blur(8px);
+        }
+
+        /* Адаптивность */
+        @media (max-width: 800px) {
+            .nav-links {
+                gap: 15px;
+            }
+            .hero h1 {
+                font-size: 3.2rem;
+            }
+            .download-btn {
+                padding: 14px 32px;
+                font-size: 1.4rem;
+            }
+            .feature-card h3 {
+                font-size: 1.6rem;
+            }
+            .cta-section h2 {
+                font-size: 2rem;
+            }
+            .reviews-section h2 {
+                font-size: 2rem;
+            }
+        }
+
+        @media (max-width: 600px) {
+            .nav-links {
+                display: none; /* на совсем мелких убираем */
+            }
+        }
+
+        @media (max-width: 500px) {
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+            .hero-description {
+                font-size: 1.1rem;
+            }
+        }
+
+        /* Дополнительная маленькая деталь — вращающийся ореол за кнопкой */
+        .glow-orb {
+            pointer-events: none;
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, #4a9eff20 0%, transparent 70%);
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: -1;
+            animation: pulseGlow 6s infinite alternate;
+        }
+
+        @keyframes pulseGlow {
+            0% { opacity: 0.3; transform: translate(-50%, -50%) scale(0.9); }
+            100% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.3); }
+        }
+
+        .hero .glow-orb {
+            top: 40%;
+        }
+
+        /* Для карточек анимация появления при скролле (базовая) */
+        .feature-card {
+            opacity: 0;
+            animation: fadeUp 1s ease forwards;
+        }
+
+        .feature-card:nth-child(1) { animation-delay: 0.1s; }
+        .feature-card:nth-child(2) { animation-delay: 0.3s; }
+        .feature-card:nth-child(3) { animation-delay: 0.5s; }
+        .feature-card:nth-child(4) { animation-delay: 0.7s; }
+
+        /* Анимация для карточек отзывов */
+        .review-card {
+            opacity: 0;
+            animation: fadeUp 0.9s ease forwards;
+        }
+        .review-card:nth-child(1) { animation-delay: 0.2s; }
+        .review-card:nth-child(2) { animation-delay: 0.4s; }
+        .review-card:nth-child(3) { animation-delay: 0.6s; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container header-content">
+            <div class="logo animate-fade-in">
+                <i class="fas fa-rocket"></i>
+                <span>FiercyLauncher</span>
+            </div>
+            <div class="nav-links animate-fade-in delay-1">
+                <a href="#">Главная</a>
+                <a href="#">Возможности</a>
+                <a href="#reviews">Отзывы</a>
+                <a href="#">Поддержка</a>
+                <a href="#">Сообщество</a>
+                <!-- НОВЫЕ КНОПКИ: Скины и Модерация -->
+                <a href="skins/" class="nav-link-special">
+                    <i class="fas fa-tshirt"></i> Скины
+                </a>
+                <a href="moder/" class="nav-link-special">
+                    <i class="fas fa-shield-alt"></i> Модерация
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="glow-orb"></div>
+            <div class="container" style="position: relative; z-index: 2;">
+                <div class="hero-badge animate-fade-up">
+                    <i class="fas fa-crown" style="margin-right: 8px;"></i> Новая эра игровых лаунчеров
+                </div>
+                <h1 class="animate-fade-up delay-1">
+                    Запускай игры<br>с невероятной скоростью
+                </h1>
+                <p class="hero-description animate-fade-up delay-2">
+                    Современный лаунчер с интуитивным интерфейсом, автообновлением и поддержкой модов.  
+                </p>
+                <!-- ОСНОВНАЯ КНОПКА СКАЧИВАНИЯ -->
+                <a href="https://example.com/launcher" class="download-btn animate-fade-up delay-3">
+                    <i class="fas fa-download"></i> Скачать лаунчер
+                    <span style="font-size: 0.9rem; opacity: 0.7; margin-left: 5px; font-weight: 400;">(v2.4.1)</span>
+                </a>
+                <p style="margin-top: 25px; color: rgba(255,255,255,0.3); font-size: 0.9rem; backdrop-filter: blur(5px);">
+                    <i class="fas fa-shield-alt"></i> для Windows 10/11 • 64-bit и Linuxпидор
+                </p>
+            </div>
+        </section>
+
+        <section class="features">
+            <div class="container">
+                <h2 class="section-title animate-fade-up">Создан для комфорта</h2>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="feature-icon"><i class="fas fa-bolt"></i></div>
+                        <h3>Мгновенный старт</h3>
+                        <p>Оптимизированная загрузка и запуск игр за секунды. Никаких задержек в развитии.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon"><i class="fas fa-sync-alt"></i></div>
+                        <h3>Автообновленияхуя</h3>
+                        <p>Игры и лаунчер обновляются автоматически — всегда последняя версия говна.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon"><i class="fas fa-puzzle-piece"></i></div>
+                        <h3>Моды и аддоны</h3>
+                        <p>Встроенная библиотека модов. Устанавливай в один клик себе вирусы.</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon"><i class="fas fa-users"></i></div>
+                        <h3>ДЕТСКОЕ ПОРНО</h3>
+                        <p>вы сможете посмотреть на детское порно прямо в игре.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Новая секция ОТЗЫВЫ с якорем -->
+        <section id="reviews" class="reviews-section">
+            <div class="container">
+                <h2 class="animate-fade-up">Что говорят игроки</h2>
+                <div class="reviews-grid">
+                    <div class="review-card">
+                        <div class="review-header">
+                            <div class="review-avatar"><i class="fas fa-user"></i></div>
+                            <div class="review-author">
+                                <h4>DUREX</h4>
+                                <div class="stars">★★★★★</div>
+                            </div>
+                        </div>
+                        <div class="review-text">
+                            <i class="fas fa-quote-left"></i> все идите нахуй!
+                        </div>
+                    </div>
+                    <div class="review-card">
+                        <div class="review-header">
+                            <div class="review-avatar"><i class="fas fa-user"></i></div>
+                            <div class="review-author">
+                                <h4>ПОТНЫЕ ЯЙЦА</h4>
+                                <div class="stars">★★★★☆</div>
+                            </div>
+                        </div>
+                        <div class="review-text">
+                            <i class="fas fa-quote-left"></i> лаунчер просто хуита!
+                        </div>
+                    </div>
+                    <div class="review-card">
+                        <div class="review-header">
+                            <div class="review-avatar"><i class="fas fa-user"></i></div>
+                            <div class="review-author">
+                                <h4>ПРОГЭМЕР_228</h4>
+                                <div class="stars">★★★★★</div>
+                            </div>
+                        </div>
+                        <div class="review-text">
+                            <i class="fas fa-quote-left"></i> ваня гей!
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="cta-section">
+            <div class="container">
+                <h2 class="animate-fade-up">Присоединяйся к миллионам игроков</h2>
+                <a href="https://sun9-9.userapi.com/impg/g8cDHA-_sSImGAuA-Wh_ikDZRDxwXGjUz6r-qQ/dN58sMMKzuU.jpg?size=604x443&quality=96&sign=961b26b16bae48d9d63ba5b0571595ae&type=album" class="secondary-btn animate-fade-up delay-2">
+                    <i class="fas fa-download"></i> Скачать бесплатно
+                </a>
+                <p style="margin-top: 25px; color: rgba(255,255,255,0.25);">
+                    <i class="fas fa-check-circle" style="color: #4a9eff;"></i> Без вирусов. Без смс и маминой карты.
+                </p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>© 2026 FIERCY LAUNCHER. Все права защищены. идите нахуй.</p>
+            <p style="margin-top: 12px;">
+                <i class="fab fa-discord" style="margin: 0 10px; opacity: 0.6; transition: 0.2s;"></i>
+                <i class="fab fa-telegram" style="margin: 0 10px; opacity: 0.6; transition: 0.2s;"></i>
+                <i class="fab fa-github" style="margin: 0 10px; opacity: 0.6; transition: 0.2s;"></i>
+            </p>
+        </div>
+    </footer>
+
+    <!-- Скрипт для плавного скролла к отзывам и эффектов -->
+    <script>
+        (function() {
+            // Плавный скролл для всех якорей (включая новую кнопку "Отзывы")
+            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+                anchor.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    const targetId = this.getAttribute('href');
+                    if (targetId === "#") return;
+                    const targetElement = document.querySelector(targetId);
+                    if (targetElement) {
+                        targetElement.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'start'
+                        });
+                    }
+                });
+            });
+
+            // Эффект параллакса для фона (легкое движение)
+            window.addEventListener('mousemove', function(e) {
+                const x = e.clientX / window.innerWidth;
+                const y = e.clientY / window.innerHeight;
+                const bg = document.body;
+                bg.style.backgroundPosition = `${x * 10}px ${y * 10}px`;
+            });
+        })();
+    </script>
+</body>
+</html>

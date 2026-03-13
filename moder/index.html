@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FiercyLauncher | Панель модерации</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        /* Стили такие же как были */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0a0c0f;
+            color: #fff;
+            line-height: 1.6;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 30% 40%, rgba(70, 130, 200, 0.15) 0%, transparent 40%),
+                        radial-gradient(circle at 70% 60%, rgba(150, 60, 200, 0.12) 0%, transparent 45%);
+            z-index: -2;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        .login-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-box {
+            background: rgba(20, 25, 33, 0.8);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(74, 158, 255, 0.2);
+            border-radius: 42px;
+            padding: 50px;
+            width: 100%;
+            max-width: 450px;
+            box-shadow: 0 30px 60px -20px #000;
+        }
+
+        .login-box h1 {
+            font-size: 2.2rem;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #fff, #b0d4ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-align: center;
+        }
+
+        .login-subtitle {
+            text-align: center;
+            color: rgba(255,255,255,0.5);
+            margin-bottom: 30px;
+            font-size: 0.95rem;
+        }
+
+        .password-input {
+            width: 100%;
+            padding: 16px 20px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(74, 158, 255, 0.3);
+            border-radius: 30px;
+            font-size: 1.1rem;
+            color: white;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+
+        .password-input:focus {
+            outline: none;
+            border-color: #4a9eff;
+            box-shadow: 0 0 20px rgba(74,158,255,0.3);
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(145deg, #1f2b3a, #111a24);
+            border: 1px solid #4a9eff;
+            border-radius: 30px;
+            color: white;
+            font-size: 1.2rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .login-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px #4a9eff;
+        }
+
+        .login-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .attempts-info {
+            text-align: center;
+            margin: 15px 0;
+            color: rgba(255,255,255,0.5);
+            font-size: 0.9rem;
+        }
+
+        .error-message {
+            color: #ff6b6b;
+            text-align: center;
+            margin: 10px 0;
+            font-size: 0.95rem;
+        }
+
+        .timer-message {
+            color: #ffb83b;
+            text-align: center;
+            margin: 15px 0;
+            font-size: 1rem;
+        }
+
+        .admin-panel {
+            padding: 40px 0;
+            display: none;
+        }
+
+        .admin-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 40px;
+            padding: 20px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .admin-header h2 {
+            font-size: 2rem;
+            background: linear-gradient(135deg, #fff, #b0d4ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logout-btn {
+            padding: 10px 25px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 30px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .logout-btn:hover {
+            background: rgba(255,75,75,0.2);
+            border-color: #ff4b4b;
+        }
+
+        .exceptions-section {
+            background: rgba(20, 25, 33, 0.6);
+            backdrop-filter: blur(10px);
+            border-radius: 32px;
+            padding: 30px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .exceptions-section h3 {
+            font-size: 1.8rem;
+            margin-bottom: 30px;
+            color: #fff;
+        }
+
+        .exception-tabs {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            padding: 12px 30px;
+            background: transparent;
+            border: 1px solid rgba(74, 158, 255, 0.3);
+            border-radius: 30px;
+            color: rgba(255,255,255,0.7);
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 1rem;
+        }
+
+        .tab-btn.active {
+            background: #4a9eff;
+            border-color: #4a9eff;
+            color: white;
+        }
+
+        .exception-list {
+            margin-bottom: 30px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .exception-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 20px;
+            margin-bottom: 10px;
+            border: 1px solid rgba(255,255,255,0.05);
+            transition: all 0.3s;
+        }
+
+        .exception-item:hover {
+            border-color: rgba(74, 158, 255, 0.3);
+            transform: translateX(5px);
+        }
+
+        .exception-item .path {
+            font-family: monospace;
+            font-size: 1rem;
+            color: #b0d4ff;
+        }
+
+        .exception-item .type-badge {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .type-badge.file {
+            background: rgba(74, 158, 255, 0.2);
+            color: #4a9eff;
+        }
+
+        .type-badge.folder {
+            background: rgba(160, 100, 255, 0.2);
+            color: #a064ff;
+        }
+
+        .delete-exception {
+            color: rgba(255,255,255,0.3);
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 1.2rem;
+        }
+
+        .delete-exception:hover {
+            color: #ff4b4b;
+            transform: scale(1.2);
+        }
+
+        .add-exception-form {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+            flex-wrap: wrap;
+        }
+
+        .exception-input {
+            flex: 1;
+            min-width: 250px;
+            padding: 15px 20px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(74, 158, 255, 0.3);
+            border-radius: 30px;
+            color: white;
+            font-size: 1rem;
+        }
+
+        .type-select {
+            padding: 15px 25px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(74, 158, 255, 0.3);
+            border-radius: 30px;
+            color: white;
+            cursor: pointer;
+        }
+
+        .add-btn {
+            padding: 15px 35px;
+            background: linear-gradient(145deg, #1f2b3a, #111a24);
+            border: 1px solid #4a9eff;
+            border-radius: 30px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+        }
+
+        .add-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px #4a9eff;
+        }
+
+        .export-data {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 20px;
+        }
+
+        .export-data textarea {
+            width: 100%;
+            padding: 15px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(74, 158, 255, 0.2);
+            border-radius: 15px;
+            color: #b0d4ff;
+            font-family: monospace;
+            margin: 10px 0;
+            resize: vertical;
+        }
+
+        .copy-btn {
+            padding: 10px 25px;
+            background: rgba(74, 158, 255, 0.2);
+            border: 1px solid #4a9eff;
+            border-radius: 30px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .copy-btn:hover {
+            background: #4a9eff;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        .download-btn {
+            padding: 12px 25px;
+            background: rgba(74, 158, 255, 0.2);
+            border: 1px solid #4a9eff;
+            border-radius: 30px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .download-btn:hover {
+            background: #4a9eff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="loginContainer" class="login-container">
+            <div class="login-box">
+                <h1><i class="fas fa-shield-alt"></i> Панель модерации</h1>
+                <div class="login-subtitle">Введите пароль для доступа</div>
+                
+                <input type="password" id="passwordInput" class="password-input" placeholder="Пароль" maxlength="50">
+                
+                <button id="loginBtn" class="login-btn">Войти</button>
+                
+                <div id="attemptsInfo" class="attempts-info">
+                    Осталось попыток: 3
+                </div>
+                
+                <div id="errorMessage" class="error-message"></div>
+                <div id="timerMessage" class="timer-message"></div>
+            </div>
+        </div>
+
+        <div id="adminPanel" class="admin-panel">
+            <div class="admin-header">
+                <h2><i class="fas fa-cog"></i> Управление исключениями</h2>
+                <button id="logoutBtn" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Выйти</button>
+            </div>
+
+            <div class="exceptions-section">
+                <h3>Список исключений лаунчера</h3>
+                
+                <div class="exception-tabs">
+                    <button class="tab-btn active" data-type="all">Все</button>
+                    <button class="tab-btn" data-type="file">Файлы</button>
+                    <button class="tab-btn" data-type="folder">Папки</button>
+                </div>
+
+                <div id="exceptionsList" class="exception-list"></div>
+
+                <div class="add-exception-form">
+                    <input type="text" id="newExceptionPath" class="exception-input" placeholder="Путь к файлу или папке">
+                    <select id="newExceptionType" class="type-select">
+                        <option value="file">Файл</option>
+                        <option value="folder">Папка</option>
+                    </select>
+                    <button id="addExceptionBtn" class="add-btn"><i class="fas fa-plus"></i> Добавить</button>
+                </div>
+
+                <div class="export-data">
+                    <h4>Экспорт данных для лаунчера</h4>
+                    <textarea id="exportJson" rows="5" readonly></textarea>
+                    
+                    <div class="action-buttons">
+                        <button id="copyJsonBtn" class="copy-btn"><i class="fas fa-copy"></i> Копировать</button>
+                        <button id="downloadJsonBtn" class="download-btn"><i class="fas fa-download"></i> Скачать JSON</button>
+                        <button id="loadFromFileBtn" class="download-btn"><i class="fas fa-upload"></i> Загрузить JSON</button>
+                    </div>
+                    
+                    <input type="file" id="fileInput" accept=".json" style="display: none;">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========= ПРОСТОЕ РЕШЕНИЕ - localStorage + файлы ==========
+        const ADMIN_PASSWORD = "admin12345";
+        const LOCK_TIME = 2 * 60 * 1000;
+        
+        let attemptsLeft = 3;
+        let lockUntil = null;
+        let exceptions = { files: [], folders: [] };
+
+        // Загрузка из localStorage
+        function loadExceptions() {
+            const saved = localStorage.getItem('fiercy_exceptions');
+            if (saved) {
+                try {
+                    exceptions = JSON.parse(saved);
+                } catch (e) {
+                    exceptions = { files: [], folders: [] };
+                }
+            } else {
+                // Если нет сохраненных, создаем тестовые
+                exceptions = {
+                    files: [
+                        'C:/Program Files/MyGame/config.ini',
+                        'D:/Games/launcher_settings.cfg'
+                    ],
+                    folders: [
+                        'C:/Users/User/AppData/Roaming/MyGame/mods',
+                        'D:/GameData/cache'
+                    ]
+                };
+                saveExceptions();
+            }
+            
+            renderExceptions();
+            updateExportJson();
+        }
+
+        // Сохранение в localStorage
+        function saveExceptions() {
+            localStorage.setItem('fiercy_exceptions', JSON.stringify(exceptions));
+            updateExportJson();
+        }
+
+        function checkLock() {
+            if (lockUntil && Date.now() < lockUntil) {
+                const remainingSeconds = Math.ceil((lockUntil - Date.now()) / 1000);
+                const minutes = Math.floor(remainingSeconds / 60);
+                const seconds = remainingSeconds % 60;
+                
+                document.getElementById('loginBtn').disabled = true;
+                document.getElementById('passwordInput').disabled = true;
+                document.getElementById('timerMessage').textContent = 
+                    `Доступ заблокирован. Подожди ${minutes}:${seconds.toString().padStart(2, '0')}`;
+                
+                setTimeout(checkLock, 1000);
+                return true;
+            } else {
+                document.getElementById('loginBtn').disabled = false;
+                document.getElementById('passwordInput').disabled = false;
+                document.getElementById('timerMessage').textContent = '';
+                lockUntil = null;
+                return false;
+            }
+        }
+
+        function addException(path, type) {
+            if (!path.trim()) {
+                alert('Введите путь');
+                return false;
+            }
+            
+            if (type === 'file') {
+                if (!exceptions.files.includes(path)) {
+                    exceptions.files.push(path);
+                } else {
+                    alert('Такой файл уже есть');
+                    return false;
+                }
+            } else {
+                if (!exceptions.folders.includes(path)) {
+                    exceptions.folders.push(path);
+                } else {
+                    alert('Такая папка уже есть');
+                    return false;
+                }
+            }
+            
+            saveExceptions();
+            renderExceptions();
+            return true;
+        }
+
+        function deleteException(path, type) {
+            if (confirm(`Удалить ${path}?`)) {
+                if (type === 'file') {
+                    exceptions.files = exceptions.files.filter(f => f !== path);
+                } else {
+                    exceptions.folders = exceptions.folders.filter(f => f !== path);
+                }
+                saveExceptions();
+                renderExceptions();
+            }
+        }
+
+        function renderExceptions(filterType = 'all') {
+            const listElement = document.getElementById('exceptionsList');
+            if (!listElement) return;
+            
+            let html = '';
+            
+            if (filterType === 'all' || filterType === 'file') {
+                exceptions.files.forEach(file => {
+                    html += createExceptionItem(file, 'file');
+                });
+            }
+            
+            if (filterType === 'all' || filterType === 'folder') {
+                exceptions.folders.forEach(folder => {
+                    html += createExceptionItem(folder, 'folder');
+                });
+            }
+            
+            if (html === '') {
+                html = '<div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.3);">Нет исключений</div>';
+            }
+            
+            listElement.innerHTML = html;
+        }
+
+        function createExceptionItem(path, type) {
+            return `
+                <div class="exception-item">
+                    <span class="path">${path}</span>
+                    <span class="type-badge ${type}">${type === 'file' ? 'Файл' : 'Папка'}</span>
+                    <i class="fas fa-times delete-exception" data-path="${path}" data-type="${type}"></i>
+                </div>
+            `;
+        }
+
+        function updateExportJson() {
+            const exportElement = document.getElementById('exportJson');
+            if (exportElement) {
+                exportElement.value = JSON.stringify(exceptions, null, 2);
+            }
+        }
+
+        function downloadJson() {
+            const dataStr = JSON.stringify(exceptions, null, 2);
+            const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+            
+            const exportFileDefaultName = 'exceptions.json';
+            
+            const linkElement = document.createElement('a');
+            linkElement.setAttribute('href', dataUri);
+            linkElement.setAttribute('download', exportFileDefaultName);
+            linkElement.click();
+        }
+
+        function loadFromFile(file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const content = JSON.parse(e.target.result);
+                    if (content.files && content.folders) {
+                        exceptions = content;
+                        saveExceptions();
+                        renderExceptions();
+                        alert('Данные загружены из файла');
+                    } else {
+                        alert('Неверный формат файла');
+                    }
+                } catch (error) {
+                    alert('Ошибка при чтении файла');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function handleLogin() {
+            if (checkLock()) return;
+            
+            const password = document.getElementById('passwordInput').value;
+            
+            if (password === ADMIN_PASSWORD) {
+                document.getElementById('loginContainer').style.display = 'none';
+                document.getElementById('adminPanel').style.display = 'block';
+                attemptsLeft = 3;
+                document.getElementById('attemptsInfo').textContent = 'Осталось попыток: 3';
+                document.getElementById('errorMessage').textContent = '';
+                document.getElementById('passwordInput').value = '';
+                loadExceptions();
+            } else {
+                attemptsLeft--;
+                document.getElementById('attemptsInfo').textContent = `Осталось попыток: ${attemptsLeft}`;
+                document.getElementById('errorMessage').textContent = 'Неверный пароль';
+                
+                if (attemptsLeft <= 0) {
+                    lockUntil = Date.now() + LOCK_TIME;
+                    attemptsLeft = 3;
+                    checkLock();
+                }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('loginBtn').addEventListener('click', handleLogin);
+            
+            document.getElementById('passwordInput').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') handleLogin();
+            });
+            
+            document.getElementById('logoutBtn').addEventListener('click', () => {
+                document.getElementById('loginContainer').style.display = 'flex';
+                document.getElementById('adminPanel').style.display = 'none';
+            });
+            
+            document.getElementById('addExceptionBtn').addEventListener('click', () => {
+                const path = document.getElementById('newExceptionPath').value;
+                const type = document.getElementById('newExceptionType').value;
+                if (addException(path, type)) {
+                    document.getElementById('newExceptionPath').value = '';
+                }
+            });
+            
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    e.target.classList.add('active');
+                    renderExceptions(e.target.dataset.type);
+                });
+            });
+            
+            document.getElementById('copyJsonBtn').addEventListener('click', () => {
+                const json = document.getElementById('exportJson');
+                json.select();
+                document.execCommand('copy');
+                alert('JSON скопирован в буфер обмена');
+            });
+            
+            document.getElementById('downloadJsonBtn').addEventListener('click', downloadJson);
+            
+            document.getElementById('loadFromFileBtn').addEventListener('click', () => {
+                document.getElementById('fileInput').click();
+            });
+            
+            document.getElementById('fileInput').addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    loadFromFile(e.target.files[0]);
+                }
+            });
+            
+            document.addEventListener('click', (e) => {
+                if (e.target.classList.contains('delete-exception')) {
+                    const path = e.target.dataset.path;
+                    const type = e.target.dataset.type;
+                    deleteException(path, type);
+                }
+            });
+            
+            checkLock();
+        });
+    </script>
+</body>
+</html>
