@@ -1,0 +1,1210 @@
+<!doctype html>
+<!-- cSpell:disable -->
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FiercyLauncher | Fiercy Money – экономика в Minecraft</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+    />
+    <style>
+      /* === ОСНОВНЫЕ СТИЛИ (как на главной) === */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Inter", sans-serif;
+        background: #0a0c0f;
+        color: #fff;
+        line-height: 1.6;
+        overflow-x: hidden;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background:
+          radial-gradient(
+            circle at 30% 40%,
+            rgba(70, 130, 200, 0.15) 0%,
+            transparent 40%
+          ),
+          radial-gradient(
+            circle at 70% 60%,
+            rgba(150, 60, 200, 0.12) 0%,
+            transparent 45%
+          ),
+          radial-gradient(
+            circle at 10% 80%,
+            rgba(30, 150, 220, 0.1) 0%,
+            transparent 50%
+          );
+        z-index: -2;
+        animation: backgroundShift 18s ease-in-out infinite alternate;
+      }
+
+      @keyframes backgroundShift {
+        0% {
+          opacity: 0.7;
+          transform: scale(1);
+        }
+        100% {
+          opacity: 1;
+          transform: scale(1.05);
+        }
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+        z-index: -1;
+        pointer-events: none;
+      }
+
+      .container {
+        max-width: 1300px;
+        margin: 0 auto;
+        padding: 0 30px;
+      }
+
+      @keyframes fadeUp {
+        0% {
+          opacity: 0;
+          transform: translateY(30px);
+        }
+        100% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .animate-fade-up {
+        animation: fadeUp 0.9s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+        opacity: 0;
+      }
+
+      .delay-1 {
+        animation-delay: 0.2s;
+      }
+      .delay-2 {
+        animation-delay: 0.4s;
+      }
+      .delay-3 {
+        animation-delay: 0.6s;
+      }
+
+      header {
+        padding: 25px 0;
+        backdrop-filter: blur(12px);
+        background: rgba(10, 12, 15, 0.4);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+
+      .header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 1.7rem;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+      }
+
+      .logo i {
+        color: #4a9eff;
+        font-size: 2rem;
+        filter: drop-shadow(0 0 10px rgba(74, 158, 255, 0.6));
+      }
+
+      .logo span {
+        background: linear-gradient(135deg, #fff, #b0d0ff);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 25px;
+        font-weight: 500;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .nav-links a {
+        color: rgba(255, 255, 255, 0.75);
+        text-decoration: none;
+        font-size: 1rem;
+        transition:
+          color 0.3s,
+          text-shadow 0.3s;
+        position: relative;
+        padding: 5px 0;
+      }
+
+      .nav-links a::after {
+        content: "";
+        position: absolute;
+        bottom: -5px;
+        left: 0;
+        width: 0;
+        height: 2px;
+        background: linear-gradient(90deg, #4a9eff, #a96eff);
+        transition: width 0.3s ease;
+      }
+
+      .nav-links a:hover {
+        color: #fff;
+        text-shadow: 0 0 8px rgba(74, 158, 255, 0.5);
+      }
+
+      .nav-links a:hover::after {
+        width: 100%;
+      }
+
+      .nav-link-special {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(74, 158, 255, 0.1);
+        border: 1px solid rgba(74, 158, 255, 0.3);
+        border-radius: 30px;
+        padding: 8px 18px !important;
+        margin-left: 5px;
+      }
+
+      .nav-link-special i {
+        color: #4a9eff;
+        font-size: 1rem;
+      }
+
+      .nav-link-special:hover {
+        background: rgba(74, 158, 255, 0.2);
+        border-color: #4a9eff;
+        transform: translateY(-2px);
+      }
+
+      .nav-link-special:hover::after {
+        display: none;
+      }
+
+      /* === СТИЛИ ДЛЯ СТРАНИЦЫ МОДА === */
+      .page-header {
+        padding: 60px 0 40px;
+        text-align: center;
+      }
+
+      .page-header h1 {
+        font-size: 3.5rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #fff, #b0d4ff);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 15px;
+      }
+
+      .page-header p {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 1.2rem;
+        max-width: 800px;
+        margin: 0 auto;
+      }
+
+      .badge {
+        display: inline-block;
+        background: rgba(74, 158, 255, 0.15);
+        border: 1px solid rgba(74, 158, 255, 0.3);
+        border-radius: 60px;
+        padding: 8px 20px;
+        margin-bottom: 20px;
+        font-weight: 600;
+        color: #b0d4ff;
+      }
+
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 30px;
+        margin: 60px 0;
+      }
+
+      .feature-card {
+        background: rgba(20, 25, 33, 0.6);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 32px;
+        padding: 30px;
+        transition: 0.3s;
+        box-shadow: 0 15px 35px -10px rgba(0, 0, 0, 0.5);
+      }
+
+      .feature-card:hover {
+        transform: translateY(-8px);
+        border-color: rgba(74, 158, 255, 0.3);
+        box-shadow: 0 20px 40px -10px #1e3f6e;
+      }
+
+      .feature-icon {
+        font-size: 2.5rem;
+        margin-bottom: 20px;
+        color: #4a9eff;
+        filter: drop-shadow(0 0 10px #4a9eff);
+      }
+
+      .feature-card h3 {
+        font-size: 1.8rem;
+        font-weight: 700;
+        margin-bottom: 15px;
+      }
+
+      .feature-card p {
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      .commands-section {
+        margin: 80px 0;
+      }
+
+      .commands-section h2 {
+        font-size: 2.2rem;
+        font-weight: 700;
+        margin: 60px 0 30px;
+        background: linear-gradient(135deg, #fff, #b0d4ff);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        border-left: 4px solid #4a9eff;
+        padding-left: 20px;
+      }
+
+      .table-responsive {
+        overflow-x: auto;
+        border-radius: 24px;
+        background: rgba(20, 25, 33, 0.5);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        margin-bottom: 40px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 800px;
+      }
+
+      th {
+        text-align: left;
+        padding: 18px 20px;
+        background: rgba(74, 158, 255, 0.15);
+        font-weight: 600;
+        color: #b0d4ff;
+        border-bottom: 2px solid #4a9eff;
+      }
+
+      td {
+        padding: 15px 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.9);
+      }
+
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      td:first-child {
+        font-family: "Monaco", "Menlo", monospace;
+        color: #7cb3ff;
+        font-weight: 500;
+      }
+
+      td:last-child {
+        color: #a0a8b8;
+        white-space: nowrap;
+      }
+
+      .note {
+        background: rgba(74, 158, 255, 0.1);
+        border-radius: 20px;
+        padding: 20px;
+        margin: 40px 0;
+        border-left: 4px solid #4a9eff;
+        color: rgba(255, 255, 255, 0.8);
+      }
+
+      footer {
+        border-top: 1px solid rgba(255, 255, 255, 0.03);
+        padding: 35px 0;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.35);
+        font-size: 0.95rem;
+        backdrop-filter: blur(8px);
+        margin-top: 80px;
+      }
+
+      @media (max-width: 800px) {
+        .page-header h1 {
+          font-size: 2.5rem;
+        }
+        .nav-links {
+          gap: 15px;
+        }
+      }
+      @media (max-width: 600px) {
+        .nav-links {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="container header-content">
+        <div class="logo animate-fade-in">
+          <i class="fas fa-rocket"></i>
+          <span>FiercyLauncher</span>
+        </div>
+        <div class="nav-links animate-fade-in delay-1">
+          <a href="../">Главная</a>
+          <a href="../#news">Новости</a>
+          <a href="../skins/" class="nav-link-special"
+            ><i class="fas fa-tshirt"></i> Скины</a
+          >
+          <a href="../moder/" class="nav-link-special"
+            ><i class="fas fa-shield-alt"></i> Модерация</a
+          >
+          <a
+            href="../money/"
+            class="nav-link-special"
+            style="background: rgba(255, 215, 0, 0.15); border-color: gold"
+            ><i class="fas fa-coins"></i> Fiercy Money</a
+          >
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div class="container">
+        <div class="page-header animate-fade-up">
+          <div class="badge">
+            <i class="fas fa-crown"></i> Экономика нового поколения
+          </div>
+          <h1><i class="fas fa-coins"></i> Fiercy Money</h1>
+          <p>
+            Русская экономика в Minecraft — банки, работа, фракции, казино и
+            полиция
+          </p>
+        </div>
+
+        <!-- Краткое описание (ключевые возможности) -->
+        <div class="features-grid animate-fade-up delay-1">
+          <div class="feature-card">
+            <div class="feature-icon">
+              <i class="fas fa-money-bill-wave"></i>
+            </div>
+            <h3>💵 Живые деньги</h3>
+            <p>
+              Банкноты 50–5000₽, монеты 1–10₽ и 50 копеек. Носите с собой,
+              обменивайте, храните в кошельке.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-university"></i></div>
+            <h3>🏦 Банковская система</h3>
+            <p>
+              Счета, пластиковые карты, переводы онлайн и оффлайн, банкоматы,
+              заморозка счетов.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-briefcase"></i></div>
+            <h3>💼 Работа и зарплата</h3>
+            <p>
+              Грузчик (доставка ящиков) и полицейский (наручники, аресты,
+              карьерный рост).
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-flag"></i></div>
+            <h3>🚩 Фракции</h3>
+            <p>
+              Создавайте гильдии, нанимайте игроков, выплачивайте зарплату из
+              казны.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-dice"></i></div>
+            <h3>🎰 Казино</h3>
+            <p>Орёл/Решка, кости, лотерейные билеты. Дуэли между игроками.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-gavel"></i></div>
+            <h3>⚖️ Правовая система</h3>
+            <p>
+              Розыск (звёзды), наручники, тюрьма, побеги через взлом стен и
+              отмычки.
+            </p>
+          </div>
+        </div>
+
+        <!-- Список команд по категориям -->
+        <div class="commands-section animate-fade-up delay-2">
+          <h2>🏦 Банковская система</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/money</td>
+                  <td>
+                    Показывает количество наличных денег (купюр) в инвентаре.
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/bank balance</td>
+                  <td>Отображает текущий баланс на банковском счёте.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/bank balanceof &lt;игрок&gt;</td>
+                  <td>Показывает баланс указанного онлайн-игрока.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/bank balanceof &lt;ник_оффлайн&gt;</td>
+                  <td>Показывает баланс оффлайн-игрока по нику.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/bank transfer &lt;игрок&gt; &lt;сумма&gt;</td>
+                  <td>
+                    Переводит указанную сумму со своего счёта на счёт другого
+                    игрока (онлайн или оффлайн).
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/bank info</td>
+                  <td>
+                    Выводит детальную информацию о своём банковском счёте
+                    (номер, статус и т.д.).
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/bank top [лимит]</td>
+                  <td>
+                    Показывает топ богачей (по умолчанию 10, можно указать лимит
+                    до 50).
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/createaccount</td>
+                  <td>
+                    Создаёт новый банковский счёт для игрока (если ещё не
+                    создан).
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/issuecard [игрок]</td>
+                  <td>
+                    Выдаёт банковскую карту (себе или указанному игроку).
+                    Требуется наличие счёта.
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/setbalance &lt;игрок&gt; &lt;сумма&gt;</td>
+                  <td>
+                    Устанавливает баланс на счёте указанного оффлайн-игрока.
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>
+                    /bank freeze &lt;игрок&gt; &lt;часы&gt; &lt;причина&gt;
+                  </td>
+                  <td>
+                    Замораживает счёт игрока на указанное количество часов с
+                    причиной.
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/bank unfreeze &lt;игрок&gt;</td>
+                  <td>Размораживает счёт игрока.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/bank take &lt;игрок&gt; &lt;сумма&gt;</td>
+                  <td>
+                    Списывает указанную сумму со счёта игрока (административное
+                    изъятие).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/bank givemoney &lt;игрок&gt; &lt;сумма&gt;</td>
+                  <td>Начисляет указанную сумму на счёт игрока.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>👮 Полиция и розыск</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/police join &lt;игрок&gt;</td>
+                  <td>Принимает игрока в полицию.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/police fire &lt;игрок&gt;</td>
+                  <td>Увольняет игрока из полиции.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/police promote &lt;игрок&gt;</td>
+                  <td>Повышает игрока в звании.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/police demote &lt;игрок&gt;</td>
+                  <td>Понижает игрока в звании.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/police setchief &lt;игрок&gt;</td>
+                  <td>Назначает игрока начальником полиции.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/police setsalary &lt;ранг&gt; &lt;сумма&gt;</td>
+                  <td>Устанавливает зарплату для указанного ранга (1-5).</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/police paysalaries</td>
+                  <td>Выплачивает зарплату всем полицейским (онлайн).</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/police list</td>
+                  <td>
+                    Показывает список всех полицейских с их рангами и
+                    статистикой.
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/police info</td>
+                  <td>
+                    Выводит информацию о вашей полицейской карьере (ранг, аресты
+                    и т.д.).
+                  </td>
+                  <td>Только для полиции</td>
+                </tr>
+                <tr>
+                  <td>/police shift</td>
+                  <td>
+                    Показывает статистику текущей смены (время, аресты,
+                    заработано).
+                  </td>
+                  <td>Только для полиции (на смене)</td>
+                </tr>
+                <tr>
+                  <td>/police salaries</td>
+                  <td>Показывает таблицу зарплат по рангам.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/police wantedlist</td>
+                  <td>Выводит список разыскиваемых игроков.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/police track &lt;игрок&gt;</td>
+                  <td>Выдаёт компас, указывающий на разыскиваемого игрока.</td>
+                  <td>Только для полиции</td>
+                </tr>
+                <tr>
+                  <td>/police spawnchief</td>
+                  <td>Спавнит NPC начальника полиции в текущей позиции.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/arrest &lt;игрок&gt;</td>
+                  <td>
+                    Арестовывает игрока (должен быть в наручниках и в зоне КПЗ).
+                    Отправляет в тюрьму.
+                  </td>
+                  <td>Только для полиции (на смене)</td>
+                </tr>
+                <tr>
+                  <td>/su &lt;игрок&gt; &lt;звёзды&gt; &lt;причина&gt;</td>
+                  <td>
+                    Объявляет игрока в розыск (звёзды от 1 до 6) или снимает
+                    розыск (звёзды 0).
+                  </td>
+                  <td>Майор+ или админ</td>
+                </tr>
+                <tr>
+                  <td>/wantedlist</td>
+                  <td>То же, что /police wantedlist.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/leavepolice</td>
+                  <td>
+                    Позволяет игроку уволиться из полиции (кроме начальника).
+                  </td>
+                  <td>Только для полиции</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>🚩 Фракции</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/faction create &lt;название&gt; &lt;зарплата&gt;</td>
+                  <td>
+                    Создаёт новую фракцию с указанной ежемесячной зарплатой.
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/faction delete &lt;название&gt;</td>
+                  <td>Удаляет фракцию.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/faction invite &lt;игрок&gt; &lt;фракция&gt;</td>
+                  <td>Отправляет игроку приглашение вступить во фракцию.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/faction kick &lt;игрок&gt; &lt;фракция&gt;</td>
+                  <td>Исключает игрока из фракции.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/faction setsalary &lt;фракция&gt; &lt;зарплата&gt;</td>
+                  <td>Изменяет размер зарплаты для участников фракции.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/faction list</td>
+                  <td>Показывает список всех фракций.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/faction info &lt;фракция&gt;</td>
+                  <td>Выводит подробную информацию о конкретной фракции.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/faction paysalaries</td>
+                  <td>
+                    Мгновенно выплачивает зарплату всем участникам фракций
+                    (тестовая/админ команда).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/f join &lt;фракция&gt;</td>
+                  <td>
+                    Позволяет игроку принять приглашение и вступить во фракцию.
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/f leave</td>
+                  <td>Позволяет игроку покинуть текущую фракцию.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/f my</td>
+                  <td>
+                    Показывает информацию о фракции, в которой состоит игрок.
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>🎰 Казино и азартные игры</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/coinflip &lt;ставка&gt; &lt;1|2&gt;</td>
+                  <td>
+                    Сыграть в орёл/решку против казино (1 — орёл, 2 — решка).
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/coinflipp &lt;игрок&gt; &lt;ставка&gt; &lt;1|2&gt;</td>
+                  <td>Бросить вызов другому игроку на дуэль в орёл/решку.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/coinaccept</td>
+                  <td>Принять вызов на дуэль в орёл/решку.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/coindeny</td>
+                  <td>Отклонить вызов на дуэль в орёл/решку.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/dice &lt;ставка&gt; &lt;число(2-12)&gt;</td>
+                  <td>
+                    Сыграть в кости против казино: выпавшая сумма сравнивается с
+                    загаданным числом.
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/diceduel &lt;игрок&gt; &lt;ставка&gt;</td>
+                  <td>
+                    Вызвать игрока на дуэль в кости (у кого больше сумма).
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/diceaccept</td>
+                  <td>Принять вызов на дуэль в кости.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/dicedeny</td>
+                  <td>Отклонить вызов на дуэль в кости.</td>
+                  <td>Все игроки</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="note">
+              Примечание: Все игры казино можно включить/отключить в
+              конфигурационном файле russianmoneymod-casino.toml, а также
+              настроить минимальную и максимальную ставку.
+            </div>
+          </div>
+
+          <h2>🏡 Система участков</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/plotcreate &lt;название&gt; &lt;цена&gt;</td>
+                  <td>
+                    Создаёт участок с указанным названием и ценой на месте
+                    игрока.
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/plotdel &lt;название&gt;</td>
+                  <td>Удаляет участок.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/plotbuy &lt;название&gt;</td>
+                  <td>Покупает участок (деньги списываются из наличных).</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/plotsell &lt;название&gt;</td>
+                  <td>
+                    Продаёт свой участок (половина цены возвращается на
+                    банковский счёт).
+                  </td>
+                  <td>Все игроки</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>💼 Работа грузчика</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/spawnloader</td>
+                  <td>Спавнит NPC-бригадира для начала работы грузчика.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="note">
+              <strong>Для работы грузчика необходимо:</strong><br />
+              - Спавнить NPC.<br />
+              - Поставить блоки loader_start и loader_end.<br />
+              - ПКМ по NPC — начать смену.<br />
+              - Взять груз на старте, отнести на финиш, получить оплату.
+            </div>
+          </div>
+
+          <h2>⛓️ Тюрьма и побеги</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/jailadmin createcell &lt;id&gt; &lt;название&gt;</td>
+                  <td>Создаёт тюремную камеру в текущей позиции.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin deletecell &lt;id&gt;</td>
+                  <td>Удаляет камеру.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin cells</td>
+                  <td>Показывает список всех камер.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin settransferzone</td>
+                  <td>
+                    Устанавливает зону передачи заключённых (радиус 10 блоков).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin setreleasepoint</td>
+                  <td>Устанавливает точку выхода из тюрьмы.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin setescapepoint</td>
+                  <td>
+                    Устанавливает точку, куда телепортируется игрок при побеге.
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>
+                    /jailadmin jail &lt;игрок&gt; &lt;минуты&gt; [причина]
+                  </td>
+                  <td>Сажает игрока в тюрьму.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin release &lt;игрок&gt;</td>
+                  <td>Досрочно освобождает игрока.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin prisoners</td>
+                  <td>Показывает список заключённых.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin info &lt;игрок&gt;</td>
+                  <td>Информация о заключённом.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/jailadmin settime &lt;игрок&gt; &lt;минуты&gt;</td>
+                  <td>Изменяет срок заключённому.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/transferprisoner &lt;игрок&gt;</td>
+                  <td>
+                    Передаёт заключённого (полицейский должен быть в зоне
+                    передачи).
+                  </td>
+                  <td>Только для полиции</td>
+                </tr>
+                <tr>
+                  <td>/jailtime</td>
+                  <td>Показывает оставшееся время, если игрок в тюрьме.</td>
+                  <td>Все игроки</td>
+                </tr>
+                <tr>
+                  <td>/setjailzone</td>
+                  <td>Устанавливает зону КПЗ (для ареста).</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/prison setclicks &lt;число&gt;</td>
+                  <td>
+                    Устанавливает количество кликов для разрушения тюремной
+                    стены.
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/prison setbasechance &lt;процент&gt;</td>
+                  <td>Базовый шанс выпадения отмычки.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/prison setmaxchance &lt;процент&gt;</td>
+                  <td>
+                    Максимальный шанс выпадения отмычки (с учётом побегов).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/prison setcooldown &lt;мс&gt;</td>
+                  <td>Задержка между кликами (античит).</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/prison info</td>
+                  <td>Показывает текущие настройки тюрьмы.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/prison playerinfo &lt;игрок&gt;</td>
+                  <td>Статистика побегов игрока.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/prison resetplayer &lt;игрок&gt;</td>
+                  <td>Сбрасывает статистику побегов игрока.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>💰 Налоговая служба (ФНС)</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/givetax &lt;игрок&gt;</td>
+                  <td>
+                    Выдаёт игроку права налогового инспектора (возможность
+                    блокировать счета).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/removetax &lt;игрок&gt;</td>
+                  <td>Лишает прав налогового инспектора.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/taxfreeze &lt;игрок&gt; &lt;причина&gt;</td>
+                  <td>
+                    Блокирует банковский счёт игрока на 2 часа (только для
+                    инспекторов).
+                  </td>
+                  <td>Сотрудник ФНС</td>
+                </tr>
+                <tr>
+                  <td>/taxunfreeze &lt;игрок&gt;</td>
+                  <td>Разблокирует счёт игрока.</td>
+                  <td>Сотрудник ФНС</td>
+                </tr>
+                <tr>
+                  <td>/taxlist</td>
+                  <td>Показывает список всех налоговых инспекторов.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>⚙️ Административные и служебные команды</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/rmreload</td>
+                  <td>Перезагружает все конфигурационные файлы мода.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/rmconfig</td>
+                  <td>
+                    Показывает текущие настройки конфигов (зарплаты, сроки
+                    тюрьмы и т.д.).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/payday</td>
+                  <td>
+                    Принудительно запускает PayDay (выплата жалованья полиции,
+                    понижение звёзд).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/paydaymode test/normal</td>
+                  <td>
+                    Переключает режим PayDay (тестовый — раз в минуту,
+                    нормальный — раз в час).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+                <tr>
+                  <td>/setpolicespawn</td>
+                  <td>
+                    Устанавливает точку спавна для полицейских (при
+                    входе/респавне они будут телепортироваться сюда).
+                  </td>
+                  <td>Оператор (2+)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>🔧 Прочее</h2>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Команда</th>
+                  <th>Описание</th>
+                  <th>Доступ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>/spawnloader</td>
+                  <td>Спавнит NPC для работы грузчика.</td>
+                  <td>Оператор (2+)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Технические детали -->
+        <div class="note" style="margin-top: 60px">
+          <h3 style="color: #4a9eff; margin-bottom: 10px">
+            🔧 Технические детали
+          </h3>
+          <p>
+            Мод написан для <strong>Minecraft Forge 1.20.1</strong>. Полностью
+            совместим с другими модами (при отсутствии конфликтов). Все
+            параметры настраиваются в конфигурационных файлах.
+          </p>
+          <p style="margin-top: 10px">
+            ⚡ Для установки скачайте мод и поместите в папку mods. Подробная
+            инструкция появится позже.
+          </p>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <div class="container">
+        <p>© 2026 FIERCY LAUNCHER. Все права защищены.</p>
+        <p style="margin-top: 12px">
+          <i class="fab fa-discord" style="margin: 0 10px; opacity: 0.6"></i>
+          <i class="fab fa-telegram" style="margin: 0 10px; opacity: 0.6"></i>
+          <i class="fab fa-github" style="margin: 0 10px; opacity: 0.6"></i>
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

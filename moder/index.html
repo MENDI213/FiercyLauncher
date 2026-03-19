@@ -5,6 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FiercyLauncher | Панель модерации</title>
+    <!-- Подключаем шрифт Inter и Font Awesome -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -16,7 +17,7 @@
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
     />
     <style>
-      /* Стили такие же как были */
+      /* === БАЗОВЫЕ СТИЛИ (как на главной) === */
       * {
         margin: 0;
         padding: 0;
@@ -28,6 +29,7 @@
         background: #0a0c0f;
         color: #fff;
         line-height: 1.6;
+        overflow-x: hidden;
       }
 
       body::before {
@@ -47,8 +49,37 @@
             circle at 70% 60%,
             rgba(150, 60, 200, 0.12) 0%,
             transparent 45%
+          ),
+          radial-gradient(
+            circle at 10% 80%,
+            rgba(30, 150, 220, 0.1) 0%,
+            transparent 50%
           );
         z-index: -2;
+        animation: backgroundShift 18s ease-in-out infinite alternate;
+      }
+
+      @keyframes backgroundShift {
+        0% {
+          opacity: 0.7;
+          transform: scale(1);
+        }
+        100% {
+          opacity: 1;
+          transform: scale(1.05);
+        }
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+        z-index: -1;
+        pointer-events: none;
       }
 
       .container {
@@ -57,6 +88,137 @@
         padding: 0 20px;
       }
 
+      @keyframes fadeUp {
+        0% {
+          opacity: 0;
+          transform: translateY(30px);
+        }
+        100% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .animate-fade-up {
+        animation: fadeUp 0.9s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+        opacity: 0;
+      }
+
+      .delay-1 {
+        animation-delay: 0.2s;
+      }
+      .delay-2 {
+        animation-delay: 0.4s;
+      }
+      .delay-3 {
+        animation-delay: 0.6s;
+      }
+
+      /* === ХЕДЕР === */
+      header {
+        padding: 25px 0;
+        backdrop-filter: blur(12px);
+        background: rgba(10, 12, 15, 0.4);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+
+      .header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 1.7rem;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+      }
+
+      .logo i {
+        color: #4a9eff;
+        font-size: 2rem;
+        filter: drop-shadow(0 0 10px rgba(74, 158, 255, 0.6));
+      }
+
+      .logo span {
+        background: linear-gradient(135deg, #fff, #b0d0ff);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 25px;
+        font-weight: 500;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .nav-links a {
+        color: rgba(255, 255, 255, 0.75);
+        text-decoration: none;
+        font-size: 1rem;
+        transition:
+          color 0.3s,
+          text-shadow 0.3s;
+        position: relative;
+        padding: 5px 0;
+      }
+
+      .nav-links a::after {
+        content: "";
+        position: absolute;
+        bottom: -5px;
+        left: 0;
+        width: 0;
+        height: 2px;
+        background: linear-gradient(90deg, #4a9eff, #a96eff);
+        transition: width 0.3s ease;
+      }
+
+      .nav-links a:hover {
+        color: #fff;
+        text-shadow: 0 0 8px rgba(74, 158, 255, 0.5);
+      }
+
+      .nav-links a:hover::after {
+        width: 100%;
+      }
+
+      .nav-link-special {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(74, 158, 255, 0.1);
+        border: 1px solid rgba(74, 158, 255, 0.3);
+        border-radius: 30px;
+        padding: 8px 18px !important;
+        margin-left: 5px;
+      }
+
+      .nav-link-special i {
+        color: #4a9eff;
+        font-size: 1rem;
+      }
+
+      .nav-link-special:hover {
+        background: rgba(74, 158, 255, 0.2);
+        border-color: #4a9eff;
+        transform: translateY(-2px);
+      }
+
+      .nav-link-special:hover::after {
+        display: none;
+      }
+
+      /* === СТИЛИ ПАНЕЛИ МОДЕРАЦИИ (были ранее) === */
       .login-container {
         min-height: 100vh;
         display: flex;
@@ -387,94 +549,164 @@
       .download-btn:hover {
         background: #4a9eff;
       }
+
+      /* === ФУТЕР === */
+      footer {
+        border-top: 1px solid rgba(255, 255, 255, 0.03);
+        padding: 35px 0;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.35);
+        font-size: 0.95rem;
+        backdrop-filter: blur(8px);
+        margin-top: 80px;
+      }
+
+      @media (max-width: 800px) {
+        .nav-links {
+          gap: 15px;
+        }
+      }
+      @media (max-width: 600px) {
+        .nav-links {
+          display: none;
+        }
+      }
     </style>
   </head>
   <body>
-    <div class="container">
-      <div id="loginContainer" class="login-container">
-        <div class="login-box">
-          <h1><i class="fas fa-shield-alt"></i> Панель модерации</h1>
-          <div class="login-subtitle">Введите пароль для доступа</div>
-
-          <input
-            type="password"
-            id="passwordInput"
-            class="password-input"
-            placeholder="Пароль"
-            maxlength="50"
-          />
-
-          <button id="loginBtn" class="login-btn">Войти</button>
-
-          <div id="attemptsInfo" class="attempts-info">Осталось попыток: 3</div>
-
-          <div id="errorMessage" class="error-message"></div>
-          <div id="timerMessage" class="timer-message"></div>
+    <!-- ХЕДЕР -->
+    <header>
+      <div class="container header-content">
+        <div class="logo animate-fade-in">
+          <i class="fas fa-rocket"></i>
+          <span>FiercyLauncher</span>
+        </div>
+        <div class="nav-links animate-fade-in delay-1">
+          <a href="../">Главная</a>
+          <a href="../#news">Новости</a>
+          <a href="../skins/" class="nav-link-special"
+            ><i class="fas fa-tshirt"></i> Скины</a
+          >
+          <a
+            href="../moder/"
+            class="nav-link-special"
+            style="background: rgba(74, 158, 255, 0.2); border-color: #4a9eff"
+            ><i class="fas fa-shield-alt"></i> Модерация</a
+          >
+          <a
+            href="../money/"
+            class="nav-link-special"
+            style="background: rgba(255, 215, 0, 0.15); border-color: gold"
+            ><i class="fas fa-coins"></i> Fiercy Money</a
+          >
         </div>
       </div>
+    </header>
 
-      <div id="adminPanel" class="admin-panel">
-        <div class="admin-header">
-          <h2><i class="fas fa-cog"></i> Управление исключениями</h2>
-          <button id="logoutBtn" class="logout-btn">
-            <i class="fas fa-sign-out-alt"></i> Выйти
-          </button>
+    <main>
+      <div class="container">
+        <!-- КОНТЕЙНЕР ЛОГИНА -->
+        <div id="loginContainer" class="login-container">
+          <div class="login-box">
+            <h1><i class="fas fa-shield-alt"></i> Панель модерации</h1>
+            <div class="login-subtitle">Введите пароль для доступа</div>
+
+            <input
+              type="password"
+              id="passwordInput"
+              class="password-input"
+              placeholder="Пароль"
+              maxlength="50"
+            />
+
+            <button id="loginBtn" class="login-btn">Войти</button>
+
+            <div id="attemptsInfo" class="attempts-info">
+              Осталось попыток: 3
+            </div>
+
+            <div id="errorMessage" class="error-message"></div>
+            <div id="timerMessage" class="timer-message"></div>
+          </div>
         </div>
 
-        <div class="exceptions-section">
-          <h3>Список исключений лаунчера</h3>
-
-          <div class="exception-tabs">
-            <button class="tab-btn active" data-type="all">Все</button>
-            <button class="tab-btn" data-type="file">Файлы</button>
-            <button class="tab-btn" data-type="folder">Папки</button>
-          </div>
-
-          <div id="exceptionsList" class="exception-list"></div>
-
-          <div class="add-exception-form">
-            <input
-              type="text"
-              id="newExceptionPath"
-              class="exception-input"
-              placeholder="Путь к файлу или папке"
-            />
-            <select id="newExceptionType" class="type-select">
-              <option value="file">Файл</option>
-              <option value="folder">Папка</option>
-            </select>
-            <button id="addExceptionBtn" class="add-btn">
-              <i class="fas fa-plus"></i> Добавить
+        <!-- ПАНЕЛЬ УПРАВЛЕНИЯ (скрыта до входа) -->
+        <div id="adminPanel" class="admin-panel">
+          <div class="admin-header">
+            <h2><i class="fas fa-cog"></i> Управление исключениями</h2>
+            <button id="logoutBtn" class="logout-btn">
+              <i class="fas fa-sign-out-alt"></i> Выйти
             </button>
           </div>
 
-          <div class="export-data">
-            <h4>Экспорт данных для лаунчера</h4>
-            <textarea id="exportJson" rows="5" readonly></textarea>
+          <div class="exceptions-section">
+            <h3>Список исключений лаунчера</h3>
 
-            <div class="action-buttons">
-              <button id="copyJsonBtn" class="copy-btn">
-                <i class="fas fa-copy"></i> Копировать
-              </button>
-              <button id="downloadJsonBtn" class="download-btn">
-                <i class="fas fa-download"></i> Скачать JSON
-              </button>
-              <button id="loadFromFileBtn" class="download-btn">
-                <i class="fas fa-upload"></i> Загрузить JSON
+            <div class="exception-tabs">
+              <button class="tab-btn active" data-type="all">Все</button>
+              <button class="tab-btn" data-type="file">Файлы</button>
+              <button class="tab-btn" data-type="folder">Папки</button>
+            </div>
+
+            <div id="exceptionsList" class="exception-list"></div>
+
+            <div class="add-exception-form">
+              <input
+                type="text"
+                id="newExceptionPath"
+                class="exception-input"
+                placeholder="Путь к файлу или папке"
+              />
+              <select id="newExceptionType" class="type-select">
+                <option value="file">Файл</option>
+                <option value="folder">Папка</option>
+              </select>
+              <button id="addExceptionBtn" class="add-btn">
+                <i class="fas fa-plus"></i> Добавить
               </button>
             </div>
 
-            <input
-              type="file"
-              id="fileInput"
-              accept=".json"
-              style="display: none"
-            />
+            <div class="export-data">
+              <h4>Экспорт данных для лаунчера</h4>
+              <textarea id="exportJson" rows="5" readonly></textarea>
+
+              <div class="action-buttons">
+                <button id="copyJsonBtn" class="copy-btn">
+                  <i class="fas fa-copy"></i> Копировать
+                </button>
+                <button id="downloadJsonBtn" class="download-btn">
+                  <i class="fas fa-download"></i> Скачать JSON
+                </button>
+                <button id="loadFromFileBtn" class="download-btn">
+                  <i class="fas fa-upload"></i> Загрузить JSON
+                </button>
+              </div>
+
+              <input
+                type="file"
+                id="fileInput"
+                accept=".json"
+                style="display: none"
+              />
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </main>
 
+    <!-- ФУТЕР -->
+    <footer>
+      <div class="container">
+        <p>© 2026 FIERCY LAUNCHER. Все права защищены.</p>
+        <p style="margin-top: 12px">
+          <i class="fab fa-discord" style="margin: 0 10px; opacity: 0.6"></i>
+          <i class="fab fa-telegram" style="margin: 0 10px; opacity: 0.6"></i>
+          <i class="fab fa-github" style="margin: 0 10px; opacity: 0.6"></i>
+        </p>
+      </div>
+    </footer>
+
+    <!-- СКРИПТ (без изменений, как в оригинале) -->
     <script>
       // ========= ПРОСТОЕ РЕШЕНИЕ - localStorage + файлы ==========
       const ADMIN_PASSWORD = "admin12345";

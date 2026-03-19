@@ -588,6 +588,25 @@
         font-size: 0.95rem;
         backdrop-filter: blur(8px);
       }
+      .news-section {
+        scroll-margin-top: 80px;
+      }
+      .news-card {
+        transition: all 0.3s;
+        opacity: 0;
+        animation: fadeUp 0.9s ease forwards;
+      }
+      .news-card:nth-child(1) {
+        animation-delay: 0.2s;
+      }
+      .news-card:nth-child(2) {
+        animation-delay: 0.4s;
+      }
+      .news-card:hover {
+        transform: translateY(-5px);
+        border-color: rgba(74, 158, 255, 0.3);
+        box-shadow: 0 20px 40px -10px #1e3f6e;
+      }
 
       /* Адаптивность */
       @media (max-width: 800px) {
@@ -701,17 +720,19 @@
         </div>
         <div class="nav-links animate-fade-in delay-1">
           <a href="#">Главная</a>
-          <a href="#">Возможности</a>
-          <a href="#reviews">Отзывы</a>
-          <a href="#">Поддержка</a>
-          <a href="#">Сообщество</a>
-          <!-- НОВЫЕ КНОПКИ: Скины и Модерация -->
-          <a href="skins/" class="nav-link-special">
-            <i class="fas fa-tshirt"></i> Скины
-          </a>
-          <a href="moder/" class="nav-link-special">
-            <i class="fas fa-shield-alt"></i> Модерация
-          </a>
+          <a href="#news">Новости</a>
+          <a href="skins/" class="nav-link-special"
+            ><i class="fas fa-tshirt"></i> Скины</a
+          >
+          <a href="moder/" class="nav-link-special"
+            ><i class="fas fa-shield-alt"></i> Модерация</a
+          >
+          <a
+            href="money/"
+            class="nav-link-special"
+            style="background: rgba(255, 215, 0, 0.15); border-color: gold"
+            ><i class="fas fa-coins"></i> Fiercy Money</a
+          >
         </div>
       </div>
     </header>
@@ -758,6 +779,66 @@
             <i class="fas fa-shield-alt"></i> для Windows 10/11 • 64-bit и
             Linuxпидор
           </p>
+        </div>
+      </section>
+      <!-- НОВОСТИ (временно заглушка) -->
+      <section id="news" class="news-section" style="padding: 60px 0">
+        <div class="container">
+          <h2 class="section-title animate-fade-up">Новости проекта</h2>
+          <div
+            class="news-grid"
+            style="
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+              gap: 30px;
+            "
+          >
+            <div
+              class="news-card"
+              style="
+                background: rgba(20, 25, 33, 0.6);
+                backdrop-filter: blur(12px);
+                border-radius: 30px;
+                padding: 25px;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+              "
+            >
+              <div
+                style="color: #4a9eff; font-size: 0.9rem; margin-bottom: 10px"
+              >
+                19 марта 2026
+              </div>
+              <h3 style="font-size: 1.5rem; margin-bottom: 15px">
+                Запуск сайта
+              </h3>
+              <p style="color: rgba(255, 255, 255, 0.7)">
+                Мы рады представить вам новый сайт FiercyLauncher! Здесь вы
+                найдёте всё необходимое.
+              </p>
+            </div>
+            <div
+              class="news-card"
+              style="
+                background: rgba(20, 25, 33, 0.6);
+                backdrop-filter: blur(12px);
+                border-radius: 30px;
+                padding: 25px;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+              "
+            >
+              <div
+                style="color: #4a9eff; font-size: 0.9rem; margin-bottom: 10px"
+              >
+                18 марта 2026
+              </div>
+              <h3 style="font-size: 1.5rem; margin-bottom: 15px">
+                Fiercy Money
+              </h3>
+              <p style="color: rgba(255, 255, 255, 0.7)">
+                Добавлен новый раздел с командами экономического мода.
+              </p>
+            </div>
+          </div>
         </div>
       </section>
 
