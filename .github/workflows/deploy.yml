@@ -24,9 +24,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Replace token in skins/index.html
+      - name: Replace tokens in HTML files
         run: |
           sed -i "s/%%GH_TOKEN%%/${{ secrets.GH_TOKEN }}/g" skins/index.html
+          sed -i "s/%%GH_TOKEN%%/${{ secrets.GH_TOKEN }}/g" moder/index.html
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -34,7 +35,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: "."
 
       - name: Deploy to GitHub Pages
         id: deployment
