@@ -4,8 +4,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FiercyLauncher | для пидорской rp сборки</title>
-    <!-- Подключаем шрифт Inter и Font Awesome для иконок -->
+    <title>FiercyLauncher – современный лаунчер для Minecraft</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -17,7 +16,7 @@
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
     />
     <style>
-      /* Сброс и базовые настройки */
+      /* === ОСНОВНЫЕ СТИЛИ === */
       * {
         margin: 0;
         padding: 0;
@@ -33,7 +32,6 @@
         scroll-behavior: smooth;
       }
 
-      /* Фон с анимированным градиентом и шумом */
       body::before {
         content: "";
         position: fixed;
@@ -72,7 +70,6 @@
         }
       }
 
-      /* Текстура шума для глубины */
       body::after {
         content: "";
         position: fixed;
@@ -85,14 +82,12 @@
         pointer-events: none;
       }
 
-      /* Контейнер */
       .container {
         max-width: 1300px;
         margin: 0 auto;
         padding: 0 30px;
       }
 
-      /* Анимации появления */
       @keyframes fadeUp {
         0% {
           opacity: 0;
@@ -104,34 +99,8 @@
         }
       }
 
-      @keyframes fadeIn {
-        0% {
-          opacity: 0;
-        }
-        100% {
-          opacity: 1;
-        }
-      }
-
-      @keyframes float {
-        0% {
-          transform: translateY(0px);
-        }
-        50% {
-          transform: translateY(-8px);
-        }
-        100% {
-          transform: translateY(0px);
-        }
-      }
-
       .animate-fade-up {
         animation: fadeUp 0.9s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
-        opacity: 0; /* начальное состояние */
-      }
-
-      .animate-fade-in {
-        animation: fadeIn 1.2s ease forwards;
         opacity: 0;
       }
 
@@ -148,7 +117,7 @@
         animation-delay: 0.8s;
       }
 
-      /* Хедер */
+      /* ХЕДЕР */
       header {
         padding: 25px 0;
         backdrop-filter: blur(12px);
@@ -192,6 +161,7 @@
         gap: 25px;
         font-weight: 500;
         align-items: center;
+        flex-wrap: wrap;
       }
 
       .nav-links a {
@@ -225,7 +195,6 @@
         width: 100%;
       }
 
-      /* Специальные кнопки для скинов и модерации */
       .nav-link-special {
         display: inline-flex;
         align-items: center;
@@ -252,16 +221,15 @@
         display: none;
       }
 
-      /* Герой секция */
+      /* ГЕРОЙ */
       .hero {
-        padding: 100px 0 70px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
+        padding: 120px 0 80px;
         text-align: center;
+        position: relative;
       }
 
       .hero-badge {
+        display: inline-block;
         background: rgba(74, 158, 255, 0.12);
         backdrop-filter: blur(8px);
         border: 1px solid rgba(74, 158, 255, 0.25);
@@ -269,15 +237,13 @@
         padding: 10px 24px;
         font-size: 0.95rem;
         font-weight: 600;
-        letter-spacing: 0.5px;
         color: #b0d4ff;
-        margin-bottom: 35px;
+        margin-bottom: 30px;
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
-        animation: fadeUp 1s ease;
       }
 
       .hero h1 {
-        font-size: clamp(3rem, 8vw, 5.2rem);
+        font-size: clamp(3rem, 8vw, 5.5rem);
         font-weight: 800;
         line-height: 1.1;
         letter-spacing: -2px;
@@ -299,7 +265,6 @@
         backdrop-filter: blur(5px);
       }
 
-      /* Кнопка скачивания — главная звезда */
       .download-btn {
         display: inline-flex;
         align-items: center;
@@ -312,23 +277,18 @@
         font-weight: 700;
         color: white;
         text-decoration: none;
-        letter-spacing: 0.5px;
-        box-shadow:
-          0 25px 40px -12px rgba(0, 120, 255, 0.5),
-          0 0 0 1px rgba(74, 158, 255, 0.3) inset;
-        transition: all 0.35s cubic-bezier(0.2, 0.9, 0.4, 1);
+        box-shadow: 0 25px 40px -12px rgba(0, 120, 255, 0.5);
+        transition: all 0.35s;
         position: relative;
         overflow: hidden;
         backdrop-filter: blur(10px);
         margin-top: 20px;
-        animation: float 5s ease-in-out infinite;
       }
 
       .download-btn i {
         font-size: 2rem;
         color: #7cb3ff;
         filter: drop-shadow(0 0 8px #4a9eff);
-        transition: transform 0.3s;
       }
 
       .download-btn::before {
@@ -348,10 +308,8 @@
       }
 
       .download-btn:hover {
-        transform: scale(1.06) translateY(-3px);
-        box-shadow:
-          0 35px 50px -15px #4a9eff,
-          0 0 0 2px rgba(110, 180, 255, 0.7) inset;
+        transform: scale(1.05) translateY(-3px);
+        box-shadow: 0 35px 50px -15px #4a9eff;
         border-color: #6eb4ff;
       }
 
@@ -363,14 +321,14 @@
         left: 100%;
       }
 
-      /* Секция особенностей */
+      /* СЕКЦИЯ ОСОБЕННОСТЕЙ */
       .features {
-        padding: 120px 0 100px;
+        padding: 100px 0;
       }
 
       .section-title {
         text-align: center;
-        font-size: 2.5rem;
+        font-size: 2.8rem;
         font-weight: 700;
         margin-bottom: 70px;
         background: linear-gradient(135deg, #fff, #b0d4ff);
@@ -386,7 +344,7 @@
       }
 
       .feature-card {
-        background: rgba(20, 25, 33, 0.5);
+        background: rgba(20, 25, 33, 0.6);
         backdrop-filter: blur(15px);
         border: 1px solid rgba(255, 255, 255, 0.05);
         border-radius: 42px;
@@ -429,11 +387,7 @@
       .feature-icon {
         font-size: 3rem;
         margin-bottom: 25px;
-        background: linear-gradient(145deg, #4a9eff, #9f7aff);
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
-        display: inline-block;
+        color: #4a9eff;
         filter: drop-shadow(0 0 18px #4a9eff);
       }
 
@@ -441,7 +395,6 @@
         font-size: 1.9rem;
         font-weight: 700;
         margin-bottom: 15px;
-        color: #fff;
       }
 
       .feature-card p {
@@ -450,21 +403,60 @@
         line-height: 1.5;
       }
 
-      /* Новая секция отзывов */
-      .reviews-section {
+      /* НОВОСТИ */
+      .news-section {
         padding: 80px 0 100px;
-        scroll-margin-top: 80px; /* чтобы при навигации хедер не перекрывал */
+        scroll-margin-top: 80px;
       }
 
-      .reviews-section h2 {
-        text-align: center;
-        font-size: 2.5rem;
-        font-weight: 700;
-        margin-bottom: 60px;
-        background: linear-gradient(135deg, #fff, #b0d4ff);
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
+      .news-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        gap: 30px;
+      }
+
+      .news-card {
+        background: rgba(20, 25, 33, 0.6);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 30px;
+        padding: 30px;
+        transition: 0.3s;
+        box-shadow: 0 15px 35px -10px rgba(0, 0, 0, 0.5);
+        opacity: 0;
+        animation: fadeUp 0.9s ease forwards;
+      }
+
+      .news-card:hover {
+        transform: translateY(-8px);
+        border-color: rgba(74, 158, 255, 0.3);
+        box-shadow: 0 20px 40px -10px #1e3f6e;
+      }
+
+      .news-card .date {
+        color: #4a9eff;
+        font-size: 0.9rem;
+        margin-bottom: 10px;
+        display: block;
+      }
+
+      .news-card h3 {
+        font-size: 1.6rem;
+        margin-bottom: 15px;
+      }
+
+      .news-card p {
+        color: rgba(255, 255, 255, 0.7);
+        line-height: 1.6;
+      }
+
+      /* ОТЗЫВЫ */
+      .reviews-section {
+        padding: 80px 0;
+        background: rgba(0, 0, 0, 0.2);
+        backdrop-filter: blur(10px);
+        border-radius: 60px;
+        margin: 60px 0;
       }
 
       .reviews-grid {
@@ -475,18 +467,15 @@
 
       .review-card {
         background: rgba(30, 35, 45, 0.6);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.05);
         border-radius: 30px;
         padding: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
         transition: 0.3s;
-        box-shadow: 0 15px 35px -10px rgba(0, 0, 0, 0.5);
       }
 
       .review-card:hover {
-        transform: translateY(-8px);
+        transform: translateY(-5px);
         border-color: rgba(74, 158, 255, 0.3);
-        box-shadow: 0 20px 40px -10px #1e3f6e;
       }
 
       .review-header {
@@ -518,13 +507,10 @@
       .review-author .stars {
         color: #ffb83b;
         letter-spacing: 3px;
-        font-size: 1rem;
       }
 
       .review-text {
         color: rgba(255, 255, 255, 0.75);
-        font-size: 1rem;
-        line-height: 1.6;
         font-style: italic;
       }
 
@@ -534,10 +520,10 @@
         margin: 0 5px;
       }
 
-      /* CTA снизу (дополнительная кнопка) */
+      /* CTA */
       .cta-section {
         text-align: center;
-        padding: 70px 0 120px;
+        padding: 80px 0;
       }
 
       .cta-section h2 {
@@ -576,10 +562,9 @@
         background: rgba(74, 158, 255, 0.15);
         border-color: #4a9eff;
         transform: scale(1.05);
-        box-shadow: 0 0 30px #4a9eff55;
       }
 
-      /* Футер */
+      /* ФУТЕР */
       footer {
         border-top: 1px solid rgba(255, 255, 255, 0.03);
         padding: 35px 0;
@@ -588,27 +573,19 @@
         font-size: 0.95rem;
         backdrop-filter: blur(8px);
       }
-      .news-section {
-        scroll-margin-top: 80px;
-      }
-      .news-card {
-        transition: all 0.3s;
-        opacity: 0;
-        animation: fadeUp 0.9s ease forwards;
-      }
-      .news-card:nth-child(1) {
-        animation-delay: 0.2s;
-      }
-      .news-card:nth-child(2) {
-        animation-delay: 0.4s;
-      }
-      .news-card:hover {
-        transform: translateY(-5px);
-        border-color: rgba(74, 158, 255, 0.3);
-        box-shadow: 0 20px 40px -10px #1e3f6e;
+
+      footer i {
+        margin: 0 10px;
+        opacity: 0.6;
+        transition: 0.2s;
+        cursor: pointer;
       }
 
-      /* Адаптивность */
+      footer i:hover {
+        opacity: 1;
+        color: #4a9eff;
+      }
+
       @media (max-width: 800px) {
         .nav-links {
           gap: 15px;
@@ -626,99 +603,23 @@
         .cta-section h2 {
           font-size: 2rem;
         }
-        .reviews-section h2 {
-          font-size: 2rem;
-        }
       }
 
       @media (max-width: 600px) {
         .nav-links {
-          display: none; /* на совсем мелких убираем */
+          display: none;
         }
-      }
-
-      @media (max-width: 500px) {
-        .hero h1 {
-          font-size: 2.5rem;
-        }
-        .hero-description {
-          font-size: 1.1rem;
-        }
-      }
-
-      /* Дополнительная маленькая деталь — вращающийся ореол за кнопкой */
-      .glow-orb {
-        pointer-events: none;
-        position: absolute;
-        width: 300px;
-        height: 300px;
-        background: radial-gradient(circle, #4a9eff20 0%, transparent 70%);
-        border-radius: 50%;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        z-index: -1;
-        animation: pulseGlow 6s infinite alternate;
-      }
-
-      @keyframes pulseGlow {
-        0% {
-          opacity: 0.3;
-          transform: translate(-50%, -50%) scale(0.9);
-        }
-        100% {
-          opacity: 0.8;
-          transform: translate(-50%, -50%) scale(1.3);
-        }
-      }
-
-      .hero .glow-orb {
-        top: 40%;
-      }
-
-      /* Для карточек анимация появления при скролле (базовая) */
-      .feature-card {
-        opacity: 0;
-        animation: fadeUp 1s ease forwards;
-      }
-
-      .feature-card:nth-child(1) {
-        animation-delay: 0.1s;
-      }
-      .feature-card:nth-child(2) {
-        animation-delay: 0.3s;
-      }
-      .feature-card:nth-child(3) {
-        animation-delay: 0.5s;
-      }
-      .feature-card:nth-child(4) {
-        animation-delay: 0.7s;
-      }
-
-      /* Анимация для карточек отзывов */
-      .review-card {
-        opacity: 0;
-        animation: fadeUp 0.9s ease forwards;
-      }
-      .review-card:nth-child(1) {
-        animation-delay: 0.2s;
-      }
-      .review-card:nth-child(2) {
-        animation-delay: 0.4s;
-      }
-      .review-card:nth-child(3) {
-        animation-delay: 0.6s;
       }
     </style>
   </head>
   <body>
     <header>
       <div class="container header-content">
-        <div class="logo animate-fade-in">
+        <div class="logo">
           <i class="fas fa-rocket"></i>
           <span>FiercyLauncher</span>
         </div>
-        <div class="nav-links animate-fade-in delay-1">
+        <div class="nav-links">
           <a href="#">Главная</a>
           <a href="#news">Новости</a>
           <a href="skins/" class="nav-link-special"
@@ -739,104 +640,36 @@
 
     <main>
       <section class="hero">
-        <div class="glow-orb"></div>
-        <div class="container" style="position: relative; z-index: 2">
+        <div class="container">
           <div class="hero-badge animate-fade-up">
-            <i class="fas fa-crown" style="margin-right: 8px"></i> Новая эра
-            игровых лаунчеров
+            <i class="fas fa-crown"></i> Новая эра игровых лаунчеров
           </div>
           <h1 class="animate-fade-up delay-1">
-            Запускай игры<br />с невероятной скоростью
+            Запускай игры <br />с невероятной скоростью
           </h1>
           <p class="hero-description animate-fade-up delay-2">
             Современный лаунчер с интуитивным интерфейсом, автообновлением и
             поддержкой модов.
           </p>
-          <!-- ОСНОВНАЯ КНОПКА СКАЧИВАНИЯ -->
           <a
-            href="https://example.com/launcher"
+            href="#download-bottom"
             class="download-btn animate-fade-up delay-3"
           >
             <i class="fas fa-download"></i> Скачать лаунчер
-            <span
-              style="
-                font-size: 0.9rem;
-                opacity: 0.7;
-                margin-left: 5px;
-                font-weight: 400;
-              "
-              >(v2.4.1)</span
-            >
+            <span style="font-size: 0.9rem; opacity: 0.7">(v2.5.0)</span>
           </a>
-          <p
-            style="
-              margin-top: 25px;
-              color: rgba(255, 255, 255, 0.3);
-              font-size: 0.9rem;
-              backdrop-filter: blur(5px);
-            "
-          >
-            <i class="fas fa-shield-alt"></i> для Windows 10/11 • 64-bit и
-            Linuxпидор
+          <p style="margin-top: 25px; color: rgba(255, 255, 255, 0.3)">
+            <i class="fas fa-shield-alt"></i> для Windows 10/11 • 64-bit и Linux
           </p>
         </div>
       </section>
-      <!-- НОВОСТИ (временно заглушка) -->
-      <section id="news" class="news-section" style="padding: 60px 0">
+
+      <!-- СЕКЦИЯ НОВОСТЕЙ (загружается динамически) -->
+      <section id="news" class="news-section">
         <div class="container">
-          <h2 class="section-title animate-fade-up">Новости проекта</h2>
-          <div
-            class="news-grid"
-            style="
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-              gap: 30px;
-            "
-          >
-            <div
-              class="news-card"
-              style="
-                background: rgba(20, 25, 33, 0.6);
-                backdrop-filter: blur(12px);
-                border-radius: 30px;
-                padding: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.05);
-              "
-            >
-              <div
-                style="color: #4a9eff; font-size: 0.9rem; margin-bottom: 10px"
-              >
-                19 марта 2026
-              </div>
-              <h3 style="font-size: 1.5rem; margin-bottom: 15px">
-                test
-              </h3>
-              <p style="color: rgba(255, 255, 255, 0.7)">
-                test.
-              </p>
-            </div>
-            <div
-              class="news-card"
-              style="
-                background: rgba(20, 25, 33, 0.6);
-                backdrop-filter: blur(12px);
-                border-radius: 30px;
-                padding: 25px;
-                border: 1px solid rgba(255, 255, 255, 0.05);
-              "
-            >
-              <div
-                style="color: #4a9eff; font-size: 0.9rem; margin-bottom: 10px"
-              >
-                19 марта 2026
-              </div>
-              <h3 style="font-size: 1.5rem; margin-bottom: 15px">
-                test
-              </h3>
-              <p style="color: rgba(255, 255, 255, 0.7)">
-                test.
-              </p>
-            </div>
+          <h2 class="section-title animate-fade-up">Последние новости</h2>
+          <div id="newsContainer" class="news-grid">
+            <!-- Новости будут подгружены через JS -->
           </div>
         </div>
       </section>
@@ -850,15 +683,15 @@
               <h3>Мгновенный старт</h3>
               <p>
                 Оптимизированная загрузка и запуск игр за секунды. Никаких
-                задержек в развитии.
+                задержек.
               </p>
             </div>
             <div class="feature-card">
               <div class="feature-icon"><i class="fas fa-sync-alt"></i></div>
-              <h3>Автообновленияхуя</h3>
+              <h3>Автообновления</h3>
               <p>
                 Игры и лаунчер обновляются автоматически — всегда последняя
-                версия говна.
+                версия.
               </p>
             </div>
             <div class="feature-card">
@@ -866,24 +699,20 @@
                 <i class="fas fa-puzzle-piece"></i>
               </div>
               <h3>Моды и аддоны</h3>
-              <p>
-                Встроенная библиотека модов. Устанавливай в один клик себе
-                вирусы.
-              </p>
+              <p>Встроенная библиотека модов. Устанавливай в один клик.</p>
             </div>
             <div class="feature-card">
               <div class="feature-icon"><i class="fas fa-users"></i></div>
-              <h3>ДЕТСКОЕ ПОРНО</h3>
-              <p>вы сможете посмотреть на детское порно прямо в игре.</p>
+              <h3>Сообщество</h3>
+              <p>Тысячи игроков, активные обсуждения и поддержка.</p>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- Новая секция ОТЗЫВЫ с якорем -->
-      <section id="reviews" class="reviews-section">
+      <section class="reviews-section">
         <div class="container">
-          <h2 class="animate-fade-up">Что говорят игроки</h2>
+          <h2 class="section-title animate-fade-up">Что говорят игроки</h2>
           <div class="reviews-grid">
             <div class="review-card">
               <div class="review-header">
@@ -894,7 +723,7 @@
                 </div>
               </div>
               <div class="review-text">
-                <i class="fas fa-quote-left"></i> все идите нахуй!
+                <i class="fas fa-quote-left"></i> Лучший лаунчер! Всё летает.
               </div>
             </div>
             <div class="review-card">
@@ -906,7 +735,7 @@
                 </div>
               </div>
               <div class="review-text">
-                <i class="fas fa-quote-left"></i> лаунчер просто хуита!
+                <i class="fas fa-quote-left"></i> Удобно, быстро, много модов.
               </div>
             </div>
             <div class="review-card">
@@ -918,7 +747,7 @@
                 </div>
               </div>
               <div class="review-text">
-                <i class="fas fa-quote-left"></i> ваня гей!
+                <i class="fas fa-quote-left"></i> Отличный проект, рекомендую!
               </div>
             </div>
           </div>
@@ -927,16 +756,17 @@
 
       <section class="cta-section">
         <div class="container">
-          <h2 class="animate-fade-up">Присоединяйся к миллионам игроков</h2>
+          <h2 class="animate-fade-up">Присоединяйся к тысячам игроков</h2>
           <a
-            href="https://sun9-9.userapi.com/impg/g8cDHA-_sSImGAuA-Wh_ikDZRDxwXGjUz6r-qQ/dN58sMMKzuU.jpg?size=604x443&quality=96&sign=961b26b16bae48d9d63ba5b0571595ae&type=album"
+            href="#"
             class="secondary-btn animate-fade-up delay-2"
+            id="download-bottom"
           >
             <i class="fas fa-download"></i> Скачать бесплатно
           </a>
           <p style="margin-top: 25px; color: rgba(255, 255, 255, 0.25)">
             <i class="fas fa-check-circle" style="color: #4a9eff"></i> Без
-            вирусов. Без смс и маминой карты.
+            вирусов, без смс.
           </p>
         </div>
       </section>
@@ -944,51 +774,55 @@
 
     <footer>
       <div class="container">
-        <p>© 2026 FIERCY LAUNCHER. Все права защищены. идите нахуй.</p>
+        <p>© 2026 FIERCY LAUNCHER. Все права защищены.</p>
         <p style="margin-top: 12px">
-          <i
-            class="fab fa-discord"
-            style="margin: 0 10px; opacity: 0.6; transition: 0.2s"
-          ></i>
-          <i
-            class="fab fa-telegram"
-            style="margin: 0 10px; opacity: 0.6; transition: 0.2s"
-          ></i>
-          <i
-            class="fab fa-github"
-            style="margin: 0 10px; opacity: 0.6; transition: 0.2s"
-          ></i>
+          <i class="fab fa-discord"></i>
+          <i class="fab fa-telegram"></i>
+          <i class="fab fa-github"></i>
         </p>
       </div>
     </footer>
-
-    <!-- Скрипт для плавного скролла к отзывам и эффектов -->
     <script>
-      (function () {
-        // Плавный скролл для всех якорей (включая новую кнопку "Отзывы")
-        document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
-          anchor.addEventListener("click", function (e) {
-            e.preventDefault();
-            const targetId = this.getAttribute("href");
-            if (targetId === "#") return;
-            const targetElement = document.querySelector(targetId);
-            if (targetElement) {
-              targetElement.scrollIntoView({
-                behavior: "smooth",
-                block: "start",
-              });
-            }
-          });
+      // Плавный скролл для всех якорей
+      document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+        anchor.addEventListener("click", function (e) {
+          e.preventDefault();
+          const targetId = this.getAttribute("href");
+          if (targetId === "#") return;
+          const targetElement = document.querySelector(targetId);
+          if (targetElement) {
+            targetElement.scrollIntoView({
+              behavior: "smooth",
+              block: "center",
+            });
+          }
         });
+      });
+    </script>
 
-        // Эффект параллакса для фона (легкое движение)
-        window.addEventListener("mousemove", function (e) {
-          const x = e.clientX / window.innerWidth;
-          const y = e.clientY / window.innerHeight;
-          const bg = document.body;
-          bg.style.backgroundPosition = `${x * 10}px ${y * 10}px`;
-        });
-      })();
+    <!-- Скрипт для загрузки новостей -->
+    <script>
+      async function loadNews() {
+        try {
+          const response = await fetch("news.json");
+          const news = await response.json();
+          const container = document.getElementById("newsContainer");
+          container.innerHTML = news
+            .map(
+              (item) => `
+                    <div class="news-card">
+                        <span class="date">${item.date}</span>
+                        <h3>${item.title}</h3>
+                        <p>${item.content}</p>
+                    </div>
+                `,
+            )
+            .join("");
+        } catch (error) {
+          console.error("Ошибка загрузки новостей:", error);
+        }
+      }
+      loadNews();
     </script>
   </body>
 </html>
