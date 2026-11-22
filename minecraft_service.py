@@ -99,8 +99,6 @@ def java_major_version(java_path: str) -> int | None:
             first = int(match.group(1))
             second = int(match.group(2) or 0)
             return second if first == 1 and second else first
-        # javaw.exe не всегда отдаёт stdout/stderr. В JDK/JRE рядом обычно есть
-        # release metadata — читаем его, не делая предположений по имени папки.
         executable = Path(java_path).resolve()
         java_home = executable.parent.parent
         release_file = java_home / "release"
@@ -153,15 +151,11 @@ def required_java_major(version_id: str, minecraft_dir: Path) -> int | None:
         except (OSError, ValueError, TypeError) as exc:
             log.debug("Не удалось прочитать javaVersion для %s: %s", candidate, exc)
 
-    # Для старых version JSON, в которых javaVersion не записан, применяем
-    # совместимость поколений Minecraft: 1.12–1.16 — Java 8, 1.17 — Java 16,
-    # 1.18–1.20.4 — Java 17, 1.20.5–1.21.x — Java 21; линейка 26.x — Java 25.
     base_id = _version_chain(version_id, minecraft_dir)[-1]
     match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", base_id)
     if match:
         first, second, patch = int(match.group(1)), int(match.group(2)), int(match.group(3) or 0)
         if first >= 26:
-            # Новая схема нумерации релизов: 26.1 требует Java 25.
             return 25
         if first == 1:
             if second < 17:
@@ -221,8 +215,6 @@ def _install_adoptium_runtime(major: int, minecraft_dir: Path, callback: dict | 
         callback["setStatus"](f"Загрузка Java {major} (Adoptium)…")
     response = None
     last_status = 0
-    # Сначала запрашиваем компактный JRE. Для комбинаций, где JRE недоступен,
-    # пробуем JDK — он также содержит полноценную JVM для запуска Minecraft.
     for image_type in ("jre", "jdk"):
         url = f"{base_url}/{image_type}/hotspot/normal/eclipse"
         candidate_response = requests.get(
@@ -319,7 +311,6 @@ def resolve_java(version_id: str, minecraft_dir: Path, custom_java: str, auto_ja
                 return _install_adoptium_runtime(required, minecraft_dir, callback)
             except Exception as exc:
                 log.exception("Не удалось установить Java %s через Adoptium", required)
-                # Разрешаем системную Java, если её major не ниже минимально требуемой.
                 system_java = find_system_java()
                 if system_java and (java_major_version(system_java) or 0) >= required:
                     log.warning("Используется установленная в системе Java %s", required)
@@ -365,8 +356,6 @@ class InstallMinecraftWorker(QThread):
                  auto_java: bool = True):
         super().__init__()
         self.profile = dict(profile)
-        # Versions/libraries/assets/runtime общие для всех новых профилей.
-        # Сохранения, моды и конфиги остаются в отдельной папке инстанса.
         self.game_root = Path(game_root).expanduser().resolve()
         self.instance_dir = Path(instance_dir).expanduser().resolve()
         self.minecraft_version = minecraft_version.strip()
@@ -376,51 +365,75 @@ class InstallMinecraftWorker(QThread):
         self.auto_java = bool(auto_java)
 
     def run(self) -> None:
-        try:
-            if not self.minecraft_version:
-                raise RuntimeError("Сначала выбери версию Minecraft.")
-            self.game_root.mkdir(parents=True, exist_ok=True)
-            self.instance_dir.mkdir(parents=True, exist_ok=True)
-            for folder in ("mods", "config", "saves", "resourcepacks", "shaderpacks", "screenshots"):
-                (self.instance_dir / folder).mkdir(parents=True, exist_ok=True)
-            callback = _callback(self)
-            self.progress.emit(0, "Проверка общей библиотеки Minecraft…")
-            # Общие версии, библиотеки, assets и runtime хранятся один раз в корне лаунчера.
-            mll.install.install_minecraft_version(self.minecraft_version, str(self.game_root), callback=callback)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if not self.minecraft_version:
+                    raise RuntimeError("Сначала выбери версию Minecraft.")
+                self.game_root.mkdir(parents=True, exist_ok=True)
+                self.instance_dir.mkdir(parents=True, exist_ok=True)
+                for folder in ("mods", "config", "saves", "resourcepacks", "shaderpacks", "screenshots"):
+                    (self.instance_dir / folder).mkdir(parents=True, exist_ok=True)
 
-            installed_id = self.minecraft_version
-            # Runtime Java устанавливается уже на этапе установки игры, даже для Vanilla.
-            # Поэтому при первом нажатии «Играть» пользователь не ждёт отдельную загрузку JRE.
-            java = resolve_java(self.minecraft_version, self.game_root, self.java_path,
-                                self.auto_java, callback=callback)
-            if self.loader != "vanilla":
-                supported = {"fabric", "forge", "neoforge", "quilt"}
-                if self.loader not in supported:
-                    raise RuntimeError(f"Неизвестный загрузчик: {self.loader}")
-                self.progress.emit(-1, f"Установка {self.loader.title()}…")
-                loader = mll.mod_loader.get_mod_loader(self.loader)
-                installed_id = loader.install(
-                    self.minecraft_version,
-                    str(self.game_root),
-                    loader_version=self.loader_version or None,
-                    callback=callback,
-                    java=java,
-                )
-                # У загрузчика может быть собственный version JSON с runtime-наследованием.
-                java = resolve_java(str(installed_id), self.game_root, self.java_path,
+                callback = _callback(self)
+                self.progress.emit(0, "Проверка общей библиотеки Minecraft…")
+                mll.install.install_minecraft_version(self.minecraft_version, str(self.game_root), callback=callback)
+
+                installed_id = self.minecraft_version
+                java = resolve_java(self.minecraft_version, self.game_root, self.java_path,
                                     self.auto_java, callback=callback)
+                if self.loader != "vanilla":
+                    supported = {"fabric", "forge", "neoforge", "quilt"}
+                    if self.loader not in supported:
+                        raise RuntimeError(f"Неизвестный загрузчик: {self.loader}")
+                    self.progress.emit(-1, f"Установка {self.loader.title()}…")
+                    loader = mll.mod_loader.get_mod_loader(self.loader)
+                    installed_id = loader.install(
+                        self.minecraft_version,
+                        str(self.game_root),
+                        loader_version=self.loader_version or None,
+                        callback=callback,
+                        java=java,
+                    )
+                    java = resolve_java(str(installed_id), self.game_root, self.java_path,
+                                        self.auto_java, callback=callback)
 
-            result = {
-                "minecraft_version": self.minecraft_version,
-                "loader": self.loader,
-                "loader_version": self.loader_version,
-                "installed_version_id": str(installed_id),
-            }
-            log.info("Установка готова: %s (%s)", self.minecraft_version, installed_id)
-            self.completed.emit(result)
-        except Exception as exc:
-            log.exception("Ошибка установки Minecraft")
-            self.failed.emit(self._friendly_error(exc))
+                result = {
+                    "minecraft_version": self.minecraft_version,
+                    "loader": self.loader,
+                    "loader_version": self.loader_version,
+                    "installed_version_id": str(installed_id),
+                }
+                log.info("Установка готова: %s (%s)", self.minecraft_version, installed_id)
+                self.completed.emit(result)
+                return # Выходим из цикла, если успешно
+
+            except Exception as exc:
+                # Если это ошибка контрольной суммы (битый файл)
+                if "InvalidChecksum" in str(exc) or "wrong Checksum" in str(exc):
+                    log.warning(f"Попытка {attempt+1} провалена (битый файл). Удаляем и качаем заново...")
+                    self.progress.emit(-1, f"Ошибка скачивания файла. Повторная попытка {attempt+1}/{max_retries}...")
+
+                    # Вытаскиваем путь битого файла из текста ошибки
+                    match = re.search(r"([A-Za-z]:\\[^\s]+)\s+has the wrong Checksum", str(exc))
+                    if match:
+                        bad_file = Path(match.group(1))
+                        if bad_file.exists():
+                            try:
+                                bad_file.unlink() # Удаляем
+                            except Exception:
+                                pass
+                    import time
+                    time.sleep(2) # Ждем и пробуем снова
+                    continue
+                else:
+                    # Если это другая ошибка (нет сети, неизвестная версия), сразу выходим
+                    log.exception("Ошибка установки Minecraft")
+                    self.failed.emit(self._friendly_error(exc))
+                    return
+
+            # Если все попытки исчерпаны и мы здесь
+        self.failed.emit("Не удалось скачать файлы игры после 3 попыток. Проверь интернет или отключи антивирус.\nПопробуй нажать «Установить» еще раз.")
 
     @staticmethod
     def _friendly_error(exc: Exception) -> str:
@@ -464,17 +477,11 @@ class LaunchWorker(QThread):
 
             callback = _callback(self)
             self.progress.emit("Проверяем игровые файлы и докачиваем недостающее…")
-            # Важно передавать именно ID выбранной сборки. Установщик сначала
-            # ищет локальный JSON и умеет восстанавливать custom/modded version,
-            # включая библиотеки загрузчика и родительскую версию.
             try:
                 mll.install.install_minecraft_version(
                     self.version_id, str(self.game_root), callback=callback,
                 )
             except Exception as install_error:
-                # Если Mojang недоступен, разрешаем запуск полностью установленной локальной
-                # версии. Не скачанные/повреждённые библиотеки проявятся как понятная ошибка
-                # ниже при формировании команды, но сеть не блокирует уже готовую установку.
                 if version_json.is_file():
                     log.warning("Онлайн-проверка версии недоступна; пробуем локальные файлы: %s", install_error)
                     self.progress.emit("Сеть недоступна — используем локальные файлы Minecraft…")
@@ -497,7 +504,6 @@ class LaunchWorker(QThread):
                 raise RuntimeError("Параметры -Xms и -Xmx задаются ползунком памяти. Удали их из дополнительных JVM-аргументов.")
             jvm_args.extend(custom)
 
-            # UUID/access token поступают только из завершённого Microsoft/Xbox/Minecraft OAuth-потока.
             options = {
                 "username": str(self.account["name"]),
                 "uuid": str(self.account["id"]),
