@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from logging_setup import configure_logging, user_data_dir
 from appearance_manager import AppearanceManager
 from launcher_window import LauncherWindow
+from ui_controls import CompactPopupProxyStyle
 from version import LAUNCHER_NAME, LAUNCHER_VERSION, GITHUB_API_LATEST, USER_AGENT
 
 log = logging.getLogger("fiercy.startup")
@@ -50,7 +51,7 @@ class BootstrapWorker(QThread):
                 required = [root / "launcher_window.py", root / "minecraft_service.py",
                             root / "auth_manager.py", root / "appearance_manager.py",
                             root / "toast_notifications.py", root / "path_utils.py",
-                            root / "assets" / "themes" / "dark.qss"]
+                            root / "discord_presence.py", root / "assets" / "themes" / "dark.qss"]
             else:
                 required = [root / "assets" / "themes" / "dark.qss"]
 
@@ -223,7 +224,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(LAUNCHER_NAME)
     app.setOrganizationName("Fiercy")
-    app.setStyle("Fusion")
+    app.setStyle(CompactPopupProxyStyle("Fusion"))
     app.setFont(QFont("Segoe UI", 10))
     icon = Path(__file__).resolve().parent / "assets" / "icon.ico"
     if icon.is_file():

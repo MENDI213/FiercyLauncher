@@ -7,11 +7,12 @@ hidden = [
     "minecraft_launcher_lib.command", "minecraft_launcher_lib.runtime",
     "minecraft_launcher_lib.mod_loader", "minecraft_launcher_lib.microsoft_account",
     "keyring", "requests", "packaging.version", "psutil",
-    "keyring.backends.Windows", "keyring.backends.SecretService",
+    "keyring.backends.Windows", "keyring.backends.SecretService", "pypresence",
     "ui_controls", "profile_dialog", "mod_service", "modpack_service", "instance_import", "storage_worker", "version_metadata",
 ]
 hidden += collect_submodules("minecraft_launcher_lib")
 hidden += collect_submodules("keyring")
+hidden += collect_submodules("pypresence")
 data_files = [("assets", "assets"), *collect_data_files("minecraft_launcher_lib")]
 
 a = Analysis(

@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import ctypes
+import logging
 import os
 import shutil
 import subprocess
@@ -14,7 +17,7 @@ import requests
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout,
-    QHBoxLayout, QProgressBar, QFileDialog,
+    QHBoxLayout, QProgressBar, QFileDialog, QCheckBox,
 )
 
 REPOSITORY = "MENDI213/FiercyLauncher"
@@ -38,14 +41,64 @@ def _safe_extract(zip_path: Path, output: Path) -> None:
         archive.extractall(output)
 
 
+def _desktop_directory() -> Path:
+    """Resolve the actual Windows Desktop folder, including OneDrive redirection."""
+    if os.name == "nt":
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            result = ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buffer)
+            if result == 0 and buffer.value:
+                return Path(buffer.value)
+        except Exception:
+            pass
+    return Path.home() / "Desktop"
+
+
+def _ps_single_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _create_desktop_shortcut(executable: Path) -> Path:
+    """Create a Windows .lnk using the built-in WScript.Shell COM object."""
+    if os.name != "nt":
+        raise OSError("Создание ярлыка поддерживается только в Windows.")
+    desktop = _desktop_directory()
+    desktop.mkdir(parents=True, exist_ok=True)
+    shortcut_path = desktop / "FiercyLauncher.lnk"
+    script = "\n".join((
+        "$shell = New-Object -ComObject WScript.Shell",
+        f"$shortcut = $shell.CreateShortcut({_ps_single_quote(str(shortcut_path))})",
+        f"$shortcut.TargetPath = {_ps_single_quote(str(executable.resolve()))}",
+        f"$shortcut.WorkingDirectory = {_ps_single_quote(str(executable.resolve().parent))}",
+        f"$shortcut.IconLocation = {_ps_single_quote(str(executable.resolve()) + ',0')}",
+        "$shortcut.Description = 'FiercyLauncher - Minecraft Launcher'",
+        "$shortcut.Save()",
+    ))
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    result = subprocess.run(
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        capture_output=True, text=True, timeout=25, creationflags=creation_flags,
+        check=False,
+    )
+    if result.returncode != 0 or not shortcut_path.is_file():
+        details = (result.stderr or result.stdout or "PowerShell не создал ярлык.").strip()
+        raise RuntimeError(details[:800])
+    return shortcut_path
+
+
 class InstallWorker(QThread):
     progress = pyqtSignal(int, str)
     completed = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, base_dir: str, parent=None):
+    def __init__(self, base_dir: str, parent=None, create_desktop_shortcut: bool = True):
         super().__init__(parent)
         self.base_dir = Path(base_dir).expanduser().resolve()
+        self.create_desktop_shortcut = bool(create_desktop_shortcut)
+        self.shortcut_error = ""
+        self.shortcut_path = None
 
     def run(self):
         temp_root = Path(tempfile.mkdtemp(prefix="fiercy-setup-"))
@@ -142,6 +195,16 @@ class InstallWorker(QThread):
             executable = target / "FiercyLauncher.exe"
             if not executable.is_file():
                 raise RuntimeError("После установки не найден FiercyLauncher.exe.")
+            if self.create_desktop_shortcut:
+                self.progress.emit(91, "Создание ярлыка на рабочем столе…")
+                try:
+                    self.shortcut_path = _create_desktop_shortcut(executable)
+                except Exception as shortcut_exc:
+                    # A shortcut failure must not roll back a successful application install.
+                    self.shortcut_error = str(shortcut_exc)
+                    logging.getLogger("fiercy.setup").warning(
+                        "Не удалось создать ярлык рабочего стола: %s", shortcut_exc
+                    )
             self.progress.emit(96, "Запуск FiercyLauncher…")
             subprocess.Popen([str(executable)], cwd=str(target), close_fds=True)
             self.progress.emit(100, f"Установка завершена: {target}")
@@ -156,7 +219,7 @@ class SetupWindow(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Установка FiercyLauncher")
-        self.setFixedSize(560, 300)
+        self.setFixedSize(560, 340)
         self.setStyleSheet("""
             QDialog { background:#0b1020; color:#f4f6ff; border:1px solid #2c3a58; border-radius:18px; }
             QLabel { color:#f4f6ff; font-family:'Segoe UI'; }
@@ -185,6 +248,10 @@ class SetupWindow(QDialog):
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(browse)
         layout.addLayout(path_row)
+        self.desktop_shortcut_check = QCheckBox("Создать ярлык FiercyLauncher на рабочем столе")
+        self.desktop_shortcut_check.setChecked(True)
+        self.desktop_shortcut_check.setToolTip("Сними галочку, если ярлык на рабочем столе не нужен.")
+        layout.addWidget(self.desktop_shortcut_check)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -212,7 +279,10 @@ class SetupWindow(QDialog):
             self.status.setText("Укажи папку установки.")
             return
         self.install_button.setEnabled(False)
-        self.worker = InstallWorker(self.path_edit.text().strip(), self)
+        self.worker = InstallWorker(
+            self.path_edit.text().strip(), self,
+            create_desktop_shortcut=self.desktop_shortcut_check.isChecked(),
+        )
         self.worker.progress.connect(self.on_progress)
         self.worker.completed.connect(self.on_complete)
         self.worker.failed.connect(self.on_error)
@@ -223,7 +293,14 @@ class SetupWindow(QDialog):
         self.status.setText(text)
 
     def on_complete(self, path: str):
-        self.status.setText(f"Готово! FiercyLauncher установлен в:\n{path}")
+        message = f"Готово! FiercyLauncher установлен в:\n{path}"
+        if self.worker and self.worker.shortcut_path:
+            message += "\nЯрлык создан на рабочем столе."
+        elif self.worker and self.worker.shortcut_error:
+            message += "\nНо ярлык не удалось создать: " + self.worker.shortcut_error[:220]
+        elif self.worker and not self.worker.create_desktop_shortcut:
+            message += "\nСоздание ярлыка пропущено по твоему выбору."
+        self.status.setText(message)
         self.install_button.setText("Установлено")
         self.install_button.setEnabled(False)
 

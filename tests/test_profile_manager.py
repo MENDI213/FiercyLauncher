@@ -38,12 +38,38 @@ class ProfileManagerTests(unittest.TestCase):
             registry = json.loads((Path(temp) / ".fiercy" / "profiles.json").read_text("utf-8"))
             self.assertEqual(registry["schema"], 1)
 
-    def test_last_profile_cannot_be_deleted(self):
+    def test_profiles_are_optional_for_plain_minecraft(self):
         with TemporaryDirectory() as temp:
             manager = ProfileManager(temp)
-            only = manager.all()[0]
-            with self.assertRaises(ProfileError):
-                manager.delete(only["id"])
+            self.assertEqual(manager.all(), [])
+            self.assertFalse((Path(temp) / "versions").is_dir())
+
+    def test_legacy_empty_default_profile_is_hidden_without_deleting_data(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "instances" / "legacy-id").mkdir(parents=True)
+            (root / "instances" / "legacy-id" / "keep.txt").write_text("data", "utf-8")
+            metadata = root / ".fiercy"
+            metadata.mkdir()
+            (metadata / "profiles.json").write_text(json.dumps({
+                "schema": 1,
+                "profiles": [{
+                    "id": "legacy-id", "name": "Minecraft",
+                    "description": "Основной игровой профиль",
+                    "minecraft_version": "", "loader": "vanilla",
+                    "loader_version": "", "installed_version_id": "",
+                }],
+            }), "utf-8")
+            manager = ProfileManager(root)
+            self.assertEqual(manager.all(), [])
+            self.assertEqual((root / "instances" / "legacy-id" / "keep.txt").read_text("utf-8"), "data")
+
+    def test_last_custom_profile_can_be_deleted(self):
+        with TemporaryDirectory() as temp:
+            manager = ProfileManager(temp)
+            only = manager.create("Only build")
+            manager.delete(only["id"])
+            self.assertEqual(manager.all(), [])
 
 
 if __name__ == "__main__":

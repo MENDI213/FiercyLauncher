@@ -48,11 +48,24 @@ class ProfileManager:
                     "modpack_source": str(item.get("modpack_source", "")),
                     "modpack_name": str(item.get("modpack_name", "")),
                 }
+                # Старые версии автоматически создавали пустой профиль Minecraft.
+                # Это не пользовательская сборка: убираем его из списка, но не
+                # удаляем папку instances/<id>, где могли остаться данные.
+                is_legacy_placeholder = (
+                    profile["name"].casefold() == "minecraft"
+                    and profile["description"] == "Основной игровой профиль"
+                    and not profile["minecraft_version"]
+                    and not profile["installed_version_id"]
+                    and profile["loader"] == "vanilla"
+                    and not profile["loader_version"]
+                )
+                if is_legacy_placeholder:
+                    continue
                 self._profiles.append(profile)
         except (OSError, ValueError, TypeError):
             self._profiles = []
-        if not self._profiles:
-            self.create("Minecraft", description="Основной игровой профиль")
+        # Профили — необязательные сборки. Обычный Minecraft хранится в корне
+        # game_root и не требует скрытого/автоматически созданного профиля.
         self._save()
 
     def _save(self) -> None:
@@ -135,8 +148,6 @@ class ProfileManager:
         raise ProfileError("Профиль не найден")
 
     def delete(self, profile_id: str, delete_files: bool = False) -> None:
-        if len(self._profiles) <= 1:
-            raise ProfileError("Нельзя удалить последний профиль")
         profile = self.get(profile_id)
         if not profile:
             raise ProfileError("Профиль не найден")

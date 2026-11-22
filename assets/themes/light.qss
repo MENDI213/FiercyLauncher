@@ -25,10 +25,13 @@ QToolButton#CloseControl:hover { background: #d84d62; color: white; }
 #SecondaryButton { color: #3c4961; background: #edf1f8; border: 1px solid #d2dbea; border-radius: 10px; padding: 10px 15px; font-weight: 650; }
 #SecondaryButton:hover { background: #dfe6f2; border-color: #b7c4da; }
 #DangerButton { color: #a73545; background: #fff0f1; border: 1px solid #f0c4ca; border-radius: 10px; padding: 10px 14px; }
-QLineEdit, QComboBox, QSpinBox, QPlainTextEdit { background: #ffffff; border: 1px solid #d1dbea; border-radius: 9px; color: #253147; padding: 9px 11px; selection-background-color: #7658d9; }
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus { border: 1px solid #8269dc; }
-QComboBox::drop-down { border: 0; width: 26px; }
-QComboBox QAbstractItemView { background: white; border: 1px solid #ccd6e6; selection-background-color: #e6e0fb; color: #253147; outline: 0; }
+QLineEdit, QComboBox, QSpinBox, QPlainTextEdit { background: #ffffff; border: 1px solid #d1dbea; border-radius: 9px; color: #253147; padding: 9px 11px; selection-background-color: #7658d9; outline: 0; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus { border: 1px solid #8269dc; outline: 0; }
+QComboBox { combobox-popup: 0; padding-right: 32px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; border: 0; width: 30px; background: transparent; }
+QComboBox::down-arrow { width: 7px; height: 7px; border-right: 2px solid #748198; border-bottom: 2px solid #748198; margin-right: 10px; margin-top: -3px; }
+QComboBox QAbstractItemView { background: #ffffff; border: 0; selection-background-color: #e6e0fb; color: #253147; outline: 0; padding: 4px; }
+QComboBoxPrivateContainer { background: #ffffff; border: 0; padding: 0; margin: 0; }
 QCheckBox { spacing: 9px; color: #42506a; }
 QCheckBox::indicator { width: 17px; height: 17px; border-radius: 5px; border: 1px solid #9eabc0; background: white; }
 QCheckBox::indicator:checked { background: #7658d9; border-color: #7658d9; }
@@ -53,3 +56,62 @@ QToolTip { color: #263147; background: #ffffff; border: 1px solid #cbd5e4; paddi
 QLabel#SkinAvatar { background: #e9eef7; border: 1px solid #cbd5e5; border-radius: 15px; color: #7658d9; font-size: 30pt; font-weight: 900; }
 
 QLabel#PromoBanner { background: #edf1f8; border: 1px solid #d4deec; border-radius: 12px; padding: 6px; }
+
+/* Consistent themed popups and lists: suppress native white focus/frame borders. */
+QComboBox QAbstractItemView, QAbstractItemView, QListView, QTreeView {
+    background: #ffffff;
+    color: #253147;
+    border: 0;
+    outline: 0;
+    selection-background-color: #e6e0fb;
+    selection-color: #253147;
+}
+QComboBox QAbstractItemView::item, QAbstractItemView::item, QListWidget::item {
+    background: transparent;
+    color: #253147;
+    border: 0;
+    padding: 8px 10px;
+    min-height: 24px;
+}
+QComboBox QAbstractItemView::item:hover, QAbstractItemView::item:hover, QListWidget::item:hover {
+    background: #eef1f8;
+    color: #202a3b;
+}
+QComboBox QAbstractItemView::item:selected, QAbstractItemView::item:selected, QListWidget::item:selected {
+    background: #e6e0fb;
+    color: #3a2b79;
+    border: 0;
+}
+QComboBox QAbstractItemView:focus, QListWidget:focus, QListView:focus, QTreeView:focus {
+    outline: 0;
+}
+QListWidget {
+    background: #ffffff;
+    color: #253147;
+    border: 1px solid #d1dbea;
+    border-radius: 10px;
+    outline: 0;
+    padding: 5px;
+    alternate-background-color: #f6f8fc;
+}
+QListWidget#ModrinthResultsList {
+    background: #f7f9fd;
+    border: 1px solid #dce3ef;
+    padding: 8px;
+}
+QComboBoxPrivateContainer {
+    background: #ffffff;
+    border: 0;
+    padding: 0;
+    margin: 0;
+}
+QFrame#ModrinthProjectCard { background: #ffffff; border: 1px solid #dce3ef; border-radius: 13px; }
+QFrame#ModrinthProjectCard:hover { background: #f6f7fc; border-color: #a89ae2; }
+QLabel#ModrinthProjectIcon { background: #e9eef7; border: 1px solid #cbd5e5; border-radius: 12px; color: #7658d9; font-size: 20pt; font-weight: 900; }
+QLabel#ModrinthProjectTitle { color: #1e2a3d; font-size: 11pt; font-weight: 800; }
+QLabel#ModrinthProjectDescription { color: #5e6a83; font-size: 9pt; }
+QLabel#ModrinthProjectMeta { color: #748198; font-size: 8pt; }
+QLabel#ModrinthProjectTags { color: #8269dc; font-size: 8pt; font-weight: 700; }
+QWidget#ModrinthCatalogContent { background: transparent; }
+QScrollArea#ModrinthCatalogScroll { background: transparent; border: 0; }
+QLabel#ModrinthGalleryImage { background: #edf1f8; border: 1px solid #d1dbea; border-radius: 9px; color: #6f7e96; }

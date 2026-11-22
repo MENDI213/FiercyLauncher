@@ -6,3 +6,4 @@ packaging>=24.2
 psutil>=6.1
 keyring>=25.5
 PyInstaller>=6.11
+pypresence>=4.6.2,<5

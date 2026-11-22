@@ -8,7 +8,10 @@ import shutil
 import subprocess
 import sys
 import uuid
-from pathlib import Path
+import zipfile
+import time
+import psutil
+from pathlib import Path, PurePosixPath
 
 from packaging.version import InvalidVersion, Version
 import minecraft_launcher_lib as mll
@@ -24,26 +27,23 @@ from PyQt5.QtWidgets import (
 
 from github_service import ReleaseCheckWorker, AssetDownloadWorker, StaticContentWorker, RemoteImageWorker
 from logging_setup import configure_logging, log_file, user_data_dir
-from minecraft_service import VersionListWorker, InstallMinecraftWorker, LaunchWorker
+from minecraft_service import (VersionListWorker, LoaderVersionListWorker, InstallMinecraftWorker, LaunchWorker)
 from profile_manager import ProfileManager, ProfileError
 from appearance_manager import AppearanceManager, PRESETS, COLOR_LABELS
 from toast_notifications import ToastNotification
 from path_utils import migrate_game_data, resolve_launcher_root, selected_base_from_root
 from version import LAUNCHER_NAME, LAUNCHER_VERSION, GITHUB_API_LATEST
-from ui_controls import (WheelSafeComboBox, WheelSafeFontComboBox, WheelSafeSpinBox, WheelSafeSlider)
+from ui_controls import (WheelSafeComboBox, WheelSafeFontComboBox, WheelSafeSpinBox, WheelSafeSlider, WheelSafeTabBar)
 from profile_dialog import CreateProfileDialog
 from mod_service import (list_mod_files, set_mod_enabled, add_local_mods,
-                         ModrinthSearchWorker, ModrinthInstallWorker,
-                         CurseForgeSearchWorker, CurseForgeInstallWorker)
+                         ModrinthSearchWorker, ModrinthProjectDetailsWorker,
+                         ModrinthImageWorker, ModrinthInstallWorker)
 from modpack_service import ModpackImportWorker, inspect_modpack
 from instance_import import LocalVersionImportWorker
 from storage_worker import StorageMigrationWorker
 from version_metadata import read_version_metadata
-
-try:
-    import keyring
-except ImportError:
-    keyring = None
+from discord_presence import DiscordPresenceManager
+from modrinth_ui import ModrinthCatalogWidget, ModrinthProjectDetailsDialog
 
 log = logging.getLogger("fiercy.ui")
 ROOT = Path(__file__).resolve().parent
@@ -132,9 +132,9 @@ class LauncherWindow(QMainWindow):
         self.game_root.mkdir(parents=True, exist_ok=True)
         self.profile_manager = ProfileManager(self.game_root)
         profiles = self.profile_manager.all()
-        self.active_profile_id = str(self.settings.value("profiles/active", profiles[0]["id"]))
-        if not self.profile_manager.get(self.active_profile_id):
-            self.active_profile_id = profiles[0]["id"]
+        saved_profile_id = str(self.settings.value("profiles/active", ""))
+        self.active_profile_id = saved_profile_id if self.profile_manager.get(saved_profile_id) else (
+            profiles[0]["id"] if profiles else "")
 
         self.versions: list[dict] = []
         self.remote_launcher_config: dict = {}
@@ -150,7 +150,25 @@ class LauncherWindow(QMainWindow):
         self.content_worker = None
         self.banner_worker = None
         self.mod_search_worker = None
+        self.mod_details_worker = None
         self.mod_install_worker = None
+        self.mod_image_workers = []
+        self._mod_image_queue = []
+        self._mod_image_active = 0
+        self._mod_image_limit = 4
+        self._mod_search_offset = 0
+        self._mod_search_total = 0
+        self._mod_search_filter_key = None
+        self._mod_search_pending = False
+        self.profile_loader_worker = None
+        self._mod_install_project_type = "mod"
+        self._pending_modpack_download = ""
+        self._launch_button_in_use = None
+        self._game_process_pid = 0
+        self._discord_game_version = ""
+        self._discord_game_nickname = ""
+        self._discord_game_started_at = 0
+        self.discord_presence = DiscordPresenceManager()
         self.modpack_worker = None
         self.local_import_worker = None
         self.storage_worker = None
@@ -176,6 +194,11 @@ class LauncherWindow(QMainWindow):
         self.apply_theme()
         self._refresh_profiles()
         self._refresh_installed_versions()
+        self._configure_discord_presence()
+        self.discord_monitor_timer = QTimer(self)
+        self.discord_monitor_timer.setInterval(15000)
+        self.discord_monitor_timer.timeout.connect(self._monitor_game_process)
+        self.discord_monitor_timer.start()
 
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._refresh_logs)
@@ -320,6 +343,9 @@ class LauncherWindow(QMainWindow):
             "auto_java": self.auto_java_check.isChecked() if hasattr(self, "auto_java_check") else True,
             "jvm_arguments": self.jvm_edit.text().strip() if hasattr(self, "jvm_edit") else "",
             "auto_update": self.auto_update_check.isChecked() if hasattr(self, "auto_update_check") else True,
+            "show_snapshots": self.show_snapshots_check.isChecked() if hasattr(self, "show_snapshots_check") else False,
+            "discord_enabled": self.discord_presence_check.isChecked() if hasattr(self, "discord_presence_check") else self.settings.value("discord/enabled", False, type=bool),
+            "discord_client_id": self.discord_client_id_edit.text().strip() if hasattr(self, "discord_client_id_edit") else str(self.settings.value("discord/client_id", "")),
             "appearance": appearance,
         }
 
@@ -362,9 +388,9 @@ class LauncherWindow(QMainWindow):
     def _build_game_page(self):
         scroll, layout = self._scroll_page()
         hero = self._card_widget(hero=True)
-        hero.setMinimumHeight(205)
+        hero.setMinimumHeight(190)
         row = QHBoxLayout(hero)
-        row.setContentsMargins(30, 24, 28, 24)
+        row.setContentsMargins(30, 22, 28, 22)
         row.setSpacing(22)
         left = QVBoxLayout()
         left.setSpacing(9)
@@ -372,36 +398,32 @@ class LauncherWindow(QMainWindow):
         eyebrow.setObjectName("Eyebrow")
         title = QLabel("Время играть.")
         title.setObjectName("HeroTitle")
-        copy = QLabel("Твои сборки, твои моды и твои правила. Всё нужное — в одном месте.")
+        copy = QLabel("Выбирай любую официальную версию Minecraft и запускай её. Для модов и сборок есть отдельные профили.")
         copy.setObjectName("HeroCopy")
         copy.setWordWrap(True)
         left.addWidget(eyebrow)
         left.addWidget(title)
         left.addWidget(copy)
         left.addStretch(1)
-        chip = QLabel("●  ГОТОВ К ЗАПУСКУ")
+        chip = QLabel("●  ОБЫЧНЫЙ MINECRAFT — БЕЗ ПРОФИЛЕЙ")
         chip.setObjectName("Pill")
         left.addWidget(chip, 0, Qt.AlignLeft)
         row.addLayout(left, 1)
         emblem = QLabel("F")
         emblem.setObjectName("HeroEmblem")
         emblem.setAlignment(Qt.AlignCenter)
-        emblem.setFixedSize(132, 132)
+        emblem.setFixedSize(120, 120)
         row.addWidget(emblem)
         layout.addWidget(hero)
 
         install_card, install_box = self._section_card(
-            "Установка сборки",
-            "Выбери версию Minecraft и загрузчик. Подходящая Java будет установлена автоматически вместе с выбранной сборкой."
+            "Выбор версии Minecraft",
+            "Здесь устанавливается чистая Vanilla-версия. Профиль создавать не нужно. Можно выбрать старый или новый официальный релиз."
         )
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(12)
-        grid.addWidget(QLabel("Игровой профиль"), 0, 0)
-        self.game_profile_combo = WheelSafeComboBox()
-        self.game_profile_combo.currentIndexChanged.connect(self._profile_combo_changed)
-        grid.addWidget(self.game_profile_combo, 0, 1)
-        grid.addWidget(QLabel("Версия Minecraft"), 1, 0)
+        grid.addWidget(QLabel("Версия Minecraft"), 0, 0)
         version_row = QHBoxLayout()
         self.version_combo = WheelSafeComboBox()
         self.version_combo.setMinimumHeight(46)
@@ -411,17 +433,11 @@ class LauncherWindow(QMainWindow):
         self.refresh_versions_button.setToolTip("Обновить официальный список релизов Minecraft")
         self.refresh_versions_button.clicked.connect(self.load_versions)
         version_row.addWidget(self.refresh_versions_button)
-        grid.addLayout(version_row, 1, 1)
-        grid.addWidget(QLabel("Загрузчик"), 2, 0)
-        self.loader_combo = WheelSafeComboBox()
-        for label, value in (("Vanilla", "vanilla"), ("Fabric", "fabric"), ("Forge", "forge"),
-                             ("NeoForge", "neoforge"), ("Quilt", "quilt")):
-            self.loader_combo.addItem(label, value)
-        grid.addWidget(self.loader_combo, 2, 1)
-        grid.addWidget(QLabel("Версия загрузчика"), 3, 0)
-        self.loader_version_edit = QLineEdit()
-        self.loader_version_edit.setPlaceholderText("Автоматически выбрать совместимую версию")
-        grid.addWidget(self.loader_version_edit, 3, 1)
+        grid.addLayout(version_row, 0, 1)
+        grid.addWidget(QLabel("Тип установки"), 1, 0)
+        vanilla_label = QLabel("Vanilla · без загрузчика модов")
+        vanilla_label.setObjectName("StatusText")
+        grid.addWidget(vanilla_label, 1, 1)
         install_box.addLayout(grid)
         self.install_progress = QProgressBar()
         self.install_progress.setRange(0, 100)
@@ -441,23 +457,22 @@ class LauncherWindow(QMainWindow):
 
         play_card, play_box = self._section_card(
             "Запуск Minecraft",
-            "Введи свой ник и выбери установленную сборку. Все параметры запуска, библиотеки и аргументы берутся из version JSON."
+            "Выбери уже установленную версию и нажми «Играть». Этот запуск использует обычную папку игры, отдельно от профилей и сборок."
         )
         nick_row = QHBoxLayout()
         nick_row.addWidget(QLabel("Ник для игры"))
         self.nickname_edit = QLineEdit(str(self.settings.value("profile/nickname", "")))
-        self.nickname_edit.setPlaceholderText("Ник Minecraft (3–16 символов)")
+        self.nickname_edit.setPlaceholderText("Ник Minecraft")
         self.nickname_edit.setMinimumHeight(40)
         nick_row.addWidget(self.nickname_edit, 1)
         play_box.addLayout(nick_row)
-
         play_row = QHBoxLayout()
         self.installed_combo = WheelSafeComboBox()
         self.installed_combo.setMinimumHeight(52)
-        self.installed_combo.currentIndexChanged.connect(self._installed_version_changed)
         play_row.addWidget(self.installed_combo, 1)
         self.refresh_installed_button = self._button("↻")
         self.refresh_installed_button.setFixedWidth(50)
+        self.refresh_installed_button.setToolTip("Обновить список установленных версий")
         self.refresh_installed_button.clicked.connect(self._refresh_installed_versions)
         play_row.addWidget(self.refresh_installed_button)
         self.play_button = self._button("▶    ИГРАТЬ", primary=True)
@@ -468,6 +483,220 @@ class LauncherWindow(QMainWindow):
         play_box.addLayout(play_row)
         layout.addWidget(play_card)
         layout.addStretch(1)
+        return scroll
+
+    def _build_profile_page(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(self._heading(
+            "Instances, mods and custom builds", "Профили и моды",
+            "Каждый профиль — отдельная сборка со своими модами, конфигами и мирами. Обычный Minecraft запускается без профиля на вкладке «Игра»."
+        ))
+
+        profiles_card, profiles_box = self._section_card(
+            "Мои сборки",
+            "Создай профиль, чтобы установить загрузчик и собирать собственный набор модов. Общие библиотеки Minecraft скачиваются только один раз."
+        )
+        row = QHBoxLayout()
+        self.profiles_combo = WheelSafeComboBox()
+        self.profiles_combo.currentIndexChanged.connect(self._profile_page_combo_changed)
+        row.addWidget(self.profiles_combo, 1)
+        create_profile_button = self._button("＋ Создать сборку", primary=True)
+        create_profile_button.clicked.connect(self.create_profile)
+        row.addWidget(create_profile_button)
+        rename_profile_button = self._button("Переименовать")
+        rename_profile_button.clicked.connect(self.rename_profile)
+        row.addWidget(rename_profile_button)
+        delete_profile_button = self._button("Удалить", danger=True)
+        delete_profile_button.clicked.connect(self.delete_profile)
+        row.addWidget(delete_profile_button)
+        profiles_box.addLayout(row)
+        self.profile_summary_label = QLabel("Сборка не выбрана")
+        self.profile_summary_label.setObjectName("StatusText")
+        profiles_box.addWidget(self.profile_summary_label)
+        self.profile_folder_label = QLabel("")
+        self.profile_folder_label.setObjectName("Muted")
+        self.profile_folder_label.setWordWrap(True)
+        profiles_box.addWidget(self.profile_folder_label)
+
+        setup_grid = QGridLayout()
+        setup_grid.setHorizontalSpacing(12)
+        setup_grid.setVerticalSpacing(10)
+        setup_grid.addWidget(QLabel("Minecraft"), 0, 0)
+        self.profile_setup_version_combo = WheelSafeComboBox()
+        self.profile_setup_version_combo.setMinimumHeight(40)
+        setup_grid.addWidget(self.profile_setup_version_combo, 0, 1)
+        setup_grid.addWidget(QLabel("Загрузчик"), 0, 2)
+        self.profile_setup_loader_combo = WheelSafeComboBox()
+        for label, value in (("Vanilla", "vanilla"), ("Fabric", "fabric"), ("Forge", "forge"),
+                             ("NeoForge", "neoforge"), ("Quilt", "quilt")):
+            self.profile_setup_loader_combo.addItem(label, value)
+        self.profile_setup_loader_combo.setMinimumHeight(40)
+        setup_grid.addWidget(self.profile_setup_loader_combo, 0, 3)
+        setup_grid.addWidget(QLabel("Версия загрузчика"), 1, 0)
+        self.profile_setup_loader_version_combo = WheelSafeComboBox()
+        self.profile_setup_loader_version_combo.addItem("Последняя стабильная", "")
+        self.profile_setup_loader_version_combo.setMinimumHeight(40)
+        setup_grid.addWidget(self.profile_setup_loader_version_combo, 1, 1, 1, 3)
+        profiles_box.addLayout(setup_grid)
+        self.profile_setup_status = QLabel("Выбери сборку или создай новую.")
+        self.profile_setup_status.setObjectName("Muted")
+        self.profile_setup_status.setWordWrap(True)
+        profiles_box.addWidget(self.profile_setup_status)
+
+        setup_actions = QHBoxLayout()
+        open_folder = self._button("Открыть папку сборки")
+        open_folder.clicked.connect(self.open_profile_folder)
+        setup_actions.addWidget(open_folder)
+        self.save_profile_button = self._button("Сохранить параметры")
+        self.save_profile_button.clicked.connect(self.save_profile_setup)
+        setup_actions.addWidget(self.save_profile_button)
+        self.install_profile_button = self._button("Установить / проверить сборку", primary=True)
+        self.install_profile_button.clicked.connect(self.install_profile)
+        setup_actions.addWidget(self.install_profile_button)
+        self.play_profile_button = self._button("▶ Играть в сборку", primary=True)
+        self.play_profile_button.clicked.connect(self.launch_active_profile)
+        setup_actions.addWidget(self.play_profile_button)
+        setup_actions.addStretch(1)
+        profiles_box.addLayout(setup_actions)
+
+        import_row = QHBoxLayout()
+        import_version = self._button("Импортировать локальную версию")
+        import_version.clicked.connect(self.import_local_version)
+        import_row.addWidget(import_version)
+        import_pack = self._button("Импортировать сборку .mrpack")
+        import_pack.clicked.connect(self.import_modpack)
+        import_row.addWidget(import_pack)
+        import_map = self._button("Импортировать карту .zip")
+        import_map.clicked.connect(self.import_map_zip)
+        import_row.addWidget(import_map)
+        open_versions = self._button("Общая папка versions")
+        open_versions.clicked.connect(lambda: self._open_folder(self.game_root / "versions"))
+        import_row.addWidget(open_versions)
+        import_row.addStretch(1)
+        profiles_box.addLayout(import_row)
+        layout.addWidget(profiles_card)
+
+        # Управление установленным содержимым и онлайн-каталог разделены по вкладкам:
+        # каталог не прячется внизу длинной страницы вместе со списком файлов.
+        self.profile_tabs = QTabWidget()
+        self.profile_tabs.setObjectName("ProfileContentTabs")
+        self.profile_tabs.setDocumentMode(True)
+        self.profile_tabs.setTabBar(WheelSafeTabBar(self.profile_tabs))
+
+        mods_page = QWidget()
+        mods_page_layout = QVBoxLayout(mods_page)
+        mods_page_layout.setContentsMargins(8, 10, 8, 8)
+        mods_page_layout.setSpacing(8)
+        mods_card, mods_box = self._section_card(
+            "Содержимое сборки",
+            "Включай, отключай и удаляй установленные моды. Остальные папки доступны из каталога или проводника."
+        )
+        mods_row = QHBoxLayout()
+        self.profile_mod_list = QListWidget()
+        self.profile_mod_list.setMinimumHeight(190)
+        self.profile_mod_list.setMaximumHeight(260)
+        self.profile_mod_list.setSpacing(3)
+        self.profile_mod_list.itemDoubleClicked.connect(self._toggle_mod_item)
+        mods_row.addWidget(self.profile_mod_list, 1)
+        mod_buttons = QVBoxLayout()
+        refresh_mods = self._button("Обновить список")
+        refresh_mods.clicked.connect(self._refresh_mod_list)
+        mod_buttons.addWidget(refresh_mods)
+        add_mods = self._button("Добавить .jar")
+        add_mods.clicked.connect(self.add_local_mod_files)
+        mod_buttons.addWidget(add_mods)
+        toggle_mod = self._button("Включить / отключить")
+        toggle_mod.clicked.connect(self.toggle_selected_mod)
+        mod_buttons.addWidget(toggle_mod)
+        remove_mod = self._button("Удалить мод", danger=True)
+        remove_mod.clicked.connect(self.remove_selected_mod)
+        mod_buttons.addWidget(remove_mod)
+        open_mods = self._button("Папка mods")
+        open_mods.clicked.connect(lambda: self._open_profile_subfolder("mods"))
+        mod_buttons.addWidget(open_mods)
+        open_resources = self._button("Ресурспаки")
+        open_resources.clicked.connect(lambda: self._open_profile_subfolder("resourcepacks"))
+        mod_buttons.addWidget(open_resources)
+        open_shaders = self._button("Шейдеры")
+        open_shaders.clicked.connect(lambda: self._open_profile_subfolder("shaderpacks"))
+        mod_buttons.addWidget(open_shaders)
+        mod_buttons.addStretch(1)
+        mods_row.addLayout(mod_buttons)
+        mods_box.addLayout(mods_row)
+        self.mod_count_label = QLabel("Список модов пуст")
+        self.mod_count_label.setObjectName("Muted")
+        mods_box.addWidget(self.mod_count_label)
+        mods_page_layout.addWidget(mods_card)
+        mods_page_layout.addStretch(1)
+        self.profile_tabs.addTab(mods_page, "Моя сборка")
+
+        catalog_page = QWidget()
+        catalog_page_layout = QVBoxLayout(catalog_page)
+        catalog_page_layout.setContentsMargins(8, 10, 8, 8)
+        catalog_page_layout.setSpacing(8)
+        catalog_card, catalog_box = self._section_card(
+            "Каталог Modrinth",
+            "Популярные проекты загружаются автоматически. Выбери тип контента или введи название для поиска. API-ключ не нужен."
+        )
+        filters_row = QHBoxLayout()
+        self.mod_content_type_combo = WheelSafeComboBox()
+        self.mod_content_type_combo.addItem("Моды", "mod")
+        self.mod_content_type_combo.addItem("Ресурспаки", "resourcepack")
+        self.mod_content_type_combo.addItem("Шейдеры", "shader")
+        self.mod_content_type_combo.addItem("Модпаки", "modpack")
+        self.mod_content_type_combo.setMinimumHeight(38)
+        filters_row.addWidget(self.mod_content_type_combo)
+        self.mod_sort_combo = WheelSafeComboBox()
+        self.mod_sort_combo.addItem("По загрузкам", "downloads")
+        self.mod_sort_combo.addItem("Популярные", "follows")
+        self.mod_sort_combo.addItem("Новинки", "newest")
+        self.mod_sort_combo.addItem("Недавно обновлялись", "updated")
+        self.mod_sort_combo.setMinimumHeight(38)
+        filters_row.addWidget(self.mod_sort_combo)
+        catalog_box.addLayout(filters_row)
+
+        search_row = QHBoxLayout()
+        self.mod_search_edit = QLineEdit()
+        self.mod_search_edit.setPlaceholderText("Найти мод, ресурспак, шейдер или сборку…")
+        self.mod_search_edit.setMinimumHeight(40)
+        search_row.addWidget(self.mod_search_edit, 1)
+        search_button = self._button("Найти", primary=True)
+        search_button.clicked.connect(self.search_mods)
+        search_row.addWidget(search_button)
+        catalog_box.addLayout(search_row)
+
+        self.mod_catalog_widget = ModrinthCatalogWidget()
+        self.mod_catalog_widget.projectDetailsRequested.connect(self.open_modrinth_project_details)
+        self.mod_catalog_widget.installRequested.connect(self.install_modrinth_project)
+        self.mod_catalog_widget.loadMoreRequested.connect(lambda: self.search_mods(load_more=True))
+        catalog_box.addWidget(self.mod_catalog_widget, 1)
+        self.mod_status_label = QLabel("Выбери профиль, чтобы увидеть совместимые проекты.")
+        self.mod_status_label.setObjectName("Muted")
+        self.mod_status_label.setWordWrap(True)
+        catalog_box.addWidget(self.mod_status_label)
+        catalog_page_layout.addWidget(catalog_card, 1)
+        self.profile_tabs.addTab(catalog_page, "Каталог модов")
+        layout.addWidget(self.profile_tabs, 1)
+
+        self.mod_search_timer = QTimer(self)
+        self.mod_search_timer.setSingleShot(True)
+        self.mod_search_timer.setInterval(450)
+        self.mod_search_timer.timeout.connect(self.search_mods)
+        self.mod_search_edit.textChanged.connect(lambda _text: self.mod_search_timer.start())
+        self.mod_search_edit.returnPressed.connect(self.search_mods)
+        self.mod_content_type_combo.currentIndexChanged.connect(self._catalog_filters_changed)
+        self.mod_sort_combo.currentIndexChanged.connect(self._catalog_filters_changed)
+        self.profile_tabs.currentChanged.connect(self._profile_content_tab_changed)
+        self.profile_setup_version_combo.currentIndexChanged.connect(self._profile_setup_version_changed)
+        self.profile_setup_loader_combo.currentIndexChanged.connect(self._profile_setup_loader_changed)
+        self.profile_setup_loader_version_combo.currentIndexChanged.connect(self._profile_setup_changed)
+        scroll.setWidget(page)
         return scroll
 
     def _build_settings_page(self):
@@ -531,6 +760,35 @@ class LauncherWindow(QMainWindow):
         self.auto_update_check.setChecked(self.settings.value("updates/auto_install", True, type=bool))
         updates_box.addWidget(self.auto_update_check)
         layout.addWidget(updates_card)
+
+        discord_card, discord_box = self._section_card(
+            "Discord Rich Presence",
+            "Показывает в Discord, что ты используешь FiercyLauncher, а при запуске игры — версию Minecraft. Нужен запущенный Discord для Windows и Application ID приложения из Discord Developer Portal."
+        )
+        self.discord_presence_check = QCheckBox("Включить отображение статуса в Discord")
+        self.discord_presence_check.setChecked(self.settings.value("discord/enabled", False, type=bool))
+        discord_box.addWidget(self.discord_presence_check)
+        discord_id_row = QHBoxLayout()
+        discord_id_row.addWidget(QLabel("Discord Application ID"))
+        self.discord_client_id_edit = QLineEdit(str(self.settings.value("discord/client_id", "")))
+        self.discord_client_id_edit.setPlaceholderText("Общий Application ID FiercyLauncher")
+        discord_id_row.addWidget(self.discord_client_id_edit, 1)
+        discord_box.addLayout(discord_id_row)
+        discord_hint = QLabel("В Discord включи: Настройки → Конфиденциальность действий → Показывать текущую активность. Веб-версия Discord не поддерживает локальный Rich Presence.")
+        discord_hint.setObjectName("Muted")
+        discord_hint.setWordWrap(True)
+        discord_box.addWidget(discord_hint)
+        layout.addWidget(discord_card)
+
+        versions_card, versions_box = self._section_card(
+            "Список версий Minecraft",
+            "Снапшоты, тестовые сборки и предварительные версии скрыты по умолчанию. Их можно включить здесь, когда понадобится."
+        )
+        self.show_snapshots_check = QCheckBox("Показывать снапшоты и предварительные версии Minecraft")
+        self.show_snapshots_check.setChecked(self.settings.value("versions/show_snapshots", False, type=bool))
+        self.show_snapshots_check.toggled.connect(self._version_snapshot_setting_changed)
+        versions_box.addWidget(self.show_snapshots_check)
+        layout.addWidget(versions_card)
 
         appearance_card, appearance_box = self._section_card(
             "Полная персонализация интерфейса",
@@ -715,123 +973,6 @@ class LauncherWindow(QMainWindow):
         self._appearance_adjusted()
         self._notify("Оформление сброшено", "Возвращена стандартная тёмная тема Fiercy.", "success")
 
-    def _build_profile_page(self):
-        scroll, layout = self._scroll_page()
-        layout.addWidget(self._heading(
-            "Instances, mods and imported builds", "Профили и моды",
-            "Создавай отдельные игровые окружения. Версии Minecraft и библиотеки хранятся общими файлами, а моды, конфиги и миры — отдельно для каждого профиля."
-        ))
-
-        profiles_card, profiles_box = self._section_card(
-            "Игровые профили",
-            "При создании выбираются имя, версия Minecraft и мод-загрузчик. Установка запускается отдельно в фоне; общие библиотеки не скачиваются повторно для каждого нового профиля."
-        )
-        row = QHBoxLayout()
-        self.profiles_combo = WheelSafeComboBox()
-        self.profiles_combo.currentIndexChanged.connect(self._profile_page_combo_changed)
-        row.addWidget(self.profiles_combo, 1)
-        create_button = self._button("＋ Создать профиль", primary=True)
-        create_button.clicked.connect(self.create_profile)
-        row.addWidget(create_button)
-        rename_button = self._button("Переименовать")
-        rename_button.clicked.connect(self.rename_profile)
-        row.addWidget(rename_button)
-        delete_button = self._button("Удалить", danger=True)
-        delete_button.clicked.connect(self.delete_profile)
-        row.addWidget(delete_button)
-        profiles_box.addLayout(row)
-        self.profile_summary_label = QLabel("Версия: —  ·  Загрузчик: —")
-        self.profile_summary_label.setObjectName("StatusText")
-        profiles_box.addWidget(self.profile_summary_label)
-        self.profile_folder_label = QLabel("")
-        self.profile_folder_label.setObjectName("Muted")
-        self.profile_folder_label.setWordWrap(True)
-        profiles_box.addWidget(self.profile_folder_label)
-        folder_row = QHBoxLayout()
-        open_folder = self._button("Открыть папку профиля")
-        open_folder.clicked.connect(self.open_profile_folder)
-        folder_row.addWidget(open_folder)
-        import_version = self._button("Импортировать локальную версию")
-        import_version.clicked.connect(self.import_local_version)
-        folder_row.addWidget(import_version)
-        import_pack = self._button("Импортировать сборку (.mrpack / .zip)")
-        import_pack.clicked.connect(self.import_modpack)
-        folder_row.addWidget(import_pack)
-        open_versions = self._button("Открыть общую папку versions")
-        open_versions.clicked.connect(lambda: self._open_folder(self._profile_game_root() / "versions"))
-        folder_row.addWidget(open_versions)
-        folder_row.addStretch(1)
-        profiles_box.addLayout(folder_row)
-        layout.addWidget(profiles_card)
-
-        mods_card, mods_box = self._section_card(
-            "Моды активного профиля",
-            "Каждый профиль использует собственную папку mods. Дважды нажми по моду, чтобы включить или отключить его. Файлы .jar.disabled не загружаются Minecraft."
-        )
-        mods_row = QHBoxLayout()
-        self.profile_mod_list = QListWidget()
-        self.profile_mod_list.setMinimumHeight(170)
-        self.profile_mod_list.itemDoubleClicked.connect(self._toggle_mod_item)
-        mods_row.addWidget(self.profile_mod_list, 1)
-        mod_buttons = QVBoxLayout()
-        refresh_mods = self._button("Обновить список")
-        refresh_mods.clicked.connect(self._refresh_mod_list)
-        mod_buttons.addWidget(refresh_mods)
-        add_mods = self._button("Добавить .jar")
-        add_mods.clicked.connect(self.add_local_mod_files)
-        mod_buttons.addWidget(add_mods)
-        toggle_mod = self._button("Включить / отключить")
-        toggle_mod.clicked.connect(self.toggle_selected_mod)
-        mod_buttons.addWidget(toggle_mod)
-        remove_mod = self._button("Удалить мод", danger=True)
-        remove_mod.clicked.connect(self.remove_selected_mod)
-        mod_buttons.addWidget(remove_mod)
-        open_mods = self._button("Открыть папку mods")
-        open_mods.clicked.connect(lambda: self._open_folder(self._instance_dir() / "mods"))
-        mod_buttons.addWidget(open_mods)
-        mod_buttons.addStretch(1)
-        mods_row.addLayout(mod_buttons)
-        mods_box.addLayout(mods_row)
-        self.mod_count_label = QLabel("Моды не найдены")
-        self.mod_count_label.setObjectName("Muted")
-        mods_box.addWidget(self.mod_count_label)
-        layout.addWidget(mods_card)
-
-        catalog_card, catalog_box = self._section_card(
-            "Каталог модов: Modrinth и CurseForge",
-            "Modrinth работает без ключа. Для официального CurseForge API потребуется личный API key; лаунчер не встраивает общий секрет в клиент."
-        )
-        search_row = QHBoxLayout()
-        self.mod_provider_combo = WheelSafeComboBox()
-        self.mod_provider_combo.addItem("Modrinth", "modrinth")
-        self.mod_provider_combo.addItem("CurseForge", "curseforge")
-        search_row.addWidget(self.mod_provider_combo)
-        self.mod_search_edit = QLineEdit()
-        self.mod_search_edit.setPlaceholderText("Название мода, например Sodium или JEI")
-        search_row.addWidget(self.mod_search_edit, 1)
-        search_button = self._button("Найти моды", primary=True)
-        search_button.clicked.connect(self.search_mods)
-        search_row.addWidget(search_button)
-        catalog_box.addLayout(search_row)
-        self.mod_results_list = QListWidget()
-        self.mod_results_list.setMinimumHeight(150)
-        catalog_box.addWidget(self.mod_results_list)
-        catalog_actions = QHBoxLayout()
-        download_mod = self._button("Установить выбранный мод", primary=True)
-        download_mod.clicked.connect(self.install_selected_mod_from_catalog)
-        catalog_actions.addWidget(download_mod)
-        curse_key = self._button("Настроить API key CurseForge")
-        curse_key.clicked.connect(self.configure_curseforge_key)
-        catalog_actions.addWidget(curse_key)
-        catalog_actions.addStretch(1)
-        catalog_box.addLayout(catalog_actions)
-        self.mod_status_label = QLabel("Выбери сборку, найди мод и добавь его в активный профиль.")
-        self.mod_status_label.setObjectName("Muted")
-        self.mod_status_label.setWordWrap(True)
-        catalog_box.addWidget(self.mod_status_label)
-        layout.addWidget(catalog_card)
-        layout.addStretch(1)
-        return scroll
 
     def _build_fiercycity_page(self):
         scroll, layout = self._scroll_page()
@@ -841,7 +982,7 @@ class LauncherWindow(QMainWindow):
         ))
         hero, box = self._section_card(
             "FiercyCity — каталог сборок",
-            "Раздел подготовлен в интерфейсе. Сейчас сборки можно импортировать из .mrpack, CurseForge export ZIP или локальной папки другого лаунчера."
+            "Раздел подготовлен в интерфейсе. Сейчас сборки можно импортировать из Modrinth .mrpack или локальной папки другого лаунчера."
         )
         status = QLabel(
             "F  ·  FIERCYCITY\n\nСКОРО\n\nПосле появления VPS/API здесь появятся опубликованные сборки, их версии, описание, список модов, обновления и управление установками.")
@@ -923,7 +1064,7 @@ class LauncherWindow(QMainWindow):
         open_logs.clicked.connect(self.open_log_folder)
         log_buttons.addWidget(open_logs)
         open_game_logs = self._button("Логи Minecraft")
-        open_game_logs.clicked.connect(lambda: self._open_folder(self._instance_dir() / "logs"))
+        open_game_logs.clicked.connect(self.open_game_logs_folder)
         log_buttons.addWidget(open_game_logs)
         clear_view = self._button("Очистить просмотр")
         clear_view.clicked.connect(lambda: (self.log_view.clear(), self.game_log_view.clear()))
@@ -971,6 +1112,8 @@ class LauncherWindow(QMainWindow):
             button.style().polish(button)
         if index == 1:
             self._refresh_mod_list()
+            if self._has_active_profile() and self.profile_tabs.currentIndex() == 1:
+                self.search_mods()
         elif index == 4:
             self._refresh_logs()
 
@@ -1050,7 +1193,7 @@ class LauncherWindow(QMainWindow):
         if self.version_worker and self.version_worker.isRunning():
             return
         self.refresh_versions_button.setEnabled(False)
-        self.install_status.setText("Загружаем список официальных релизов…")
+        self.install_status.setText("Загружаем официальный список версий Minecraft…")
         self._set_status("загрузка версий")
         self.version_worker = VersionListWorker()
         self.version_worker.loaded.connect(self._versions_loaded)
@@ -1061,29 +1204,102 @@ class LauncherWindow(QMainWindow):
         self.refresh_versions_button.setEnabled(True)
         self.versions = versions
         self._populate_version_combo()
-        self.install_status.setText(f"Доступно официальных релизов: {self.version_combo.count()}. Snapshots скрыты.")
+        hidden_snapshots = not self.show_snapshots_check.isChecked()
+        suffix = " Снапшоты скрыты — включи их в настройках." if hidden_snapshots else ""
+        self.install_status.setText(
+            f"Доступно версий Minecraft: {self.version_combo.count()}.{suffix}"
+        )
         self._set_status("список версий загружен")
+        if self._has_active_profile():
+            self._refresh_profile_setup_controls()
+            if self.stack.currentIndex() == 1 and self.profile_tabs.currentIndex() == 1:
+                self.search_mods()
+
+    @staticmethod
+    def _version_display_name(item: dict) -> str:
+        version_id = str(item.get("id", "")).strip()
+        labels = {
+            "release": "Релиз",
+            "snapshot": "Снапшот",
+            "old_beta": "Старая Beta",
+            "old_alpha": "Старая Alpha",
+        }
+        kind = labels.get(str(item.get("type", "")).lower(), "Версия")
+        return f"{version_id}  ·  {kind}" if version_id else ""
+
+    def _visible_minecraft_versions(self) -> list[dict]:
+        show_snapshots = bool(
+            self.show_snapshots_check.isChecked()
+            if hasattr(self, "show_snapshots_check")
+            else self.settings.value("versions/show_snapshots", False, type=bool)
+        )
+        return [
+            item for item in self.versions
+            if show_snapshots or str(item.get("type", "")).lower() != "snapshot"
+        ]
 
     def _populate_version_combo(self):
-        previous = self.version_combo.currentData()
-        allowed = self.remote_versions_config.get("supported_minecraft_versions", [])
-        if not isinstance(allowed, list):
-            allowed = []
-        allowed_set = {str(item) for item in allowed if str(item).strip()}
-        items = [item for item in self.versions if not allowed_set or str(item.get("id", "")) in allowed_set]
+        visible_versions = self._visible_minecraft_versions()
+        previous = str(self.version_combo.currentData() or "")
+        self.version_combo.blockSignals(True)
         self.version_combo.clear()
-        for item in items:
+        for item in visible_versions:
             version_id = str(item.get("id", ""))
             if version_id:
-                self.version_combo.addItem(version_id, version_id)
+                self.version_combo.addItem(self._version_display_name(item), version_id)
         preferred = previous or str(self.remote_versions_config.get("recommended_minecraft_version", ""))
         if not preferred:
             preferred = str(self.remote_launcher_config.get("recommended_minecraft_version", ""))
         index = self.version_combo.findData(preferred)
+        if index < 0:
+            release = next((item for item in visible_versions
+                            if str(item.get("type", "")).lower() == "release"), None)
+            fallback = str(release.get("id", "")) if release else (
+                str(visible_versions[0].get("id", "")) if visible_versions else "")
+            index = self.version_combo.findData(fallback)
         if index >= 0:
             self.version_combo.setCurrentIndex(index)
-        elif self.version_combo.count():
-            self.version_combo.setCurrentIndex(0)
+        elif not self.version_combo.count():
+            self.version_combo.addItem("Нет доступных версий", None)
+        self.version_combo.blockSignals(False)
+
+        if hasattr(self, "profile_setup_version_combo"):
+            profile_previous = str(self.profile_setup_version_combo.currentData() or "")
+            self.profile_setup_version_combo.blockSignals(True)
+            self.profile_setup_version_combo.clear()
+            for item in visible_versions:
+                version_id = str(item.get("id", ""))
+                if version_id:
+                    self.profile_setup_version_combo.addItem(self._version_display_name(item), version_id)
+            profile = self._active_profile()
+            preferred_profile = str(profile.get("minecraft_version", "") or profile_previous or "")
+            profile_pos = self.profile_setup_version_combo.findData(preferred_profile)
+            if profile_pos < 0:
+                release = next((item for item in visible_versions
+                                if str(item.get("type", "")).lower() == "release"), None)
+                fallback = str(release.get("id", "")) if release else (
+                    str(visible_versions[0].get("id", "")) if visible_versions else "")
+                profile_pos = self.profile_setup_version_combo.findData(fallback)
+            if profile_pos >= 0:
+                self.profile_setup_version_combo.setCurrentIndex(profile_pos)
+            elif not self.profile_setup_version_combo.count():
+                self.profile_setup_version_combo.addItem("Нет доступных версий", None)
+            self.profile_setup_version_combo.blockSignals(False)
+
+    def _version_snapshot_setting_changed(self, checked: bool):
+        if not getattr(self, "_settings_tracking_ready", False):
+            # The setting widget is created before tracking is connected.
+            pass
+        if self.versions:
+            self._populate_version_combo()
+            total = self.version_combo.count()
+            if checked:
+                self.install_status.setText(f"Доступно версий Minecraft: {total}, включая снапшоты.")
+            else:
+                self.install_status.setText(f"Доступно стабильных и старых версий: {total}. Снапшоты скрыты.")
+            if self._has_active_profile():
+                self._profile_setup_changed()
+        self._settings_changed()
 
     def _versions_failed(self, message: str):
         self.refresh_versions_button.setEnabled(True)
@@ -1092,14 +1308,19 @@ class LauncherWindow(QMainWindow):
         self._notify("Не удалось загрузить версии", message, "error", 6500)
 
     def _active_profile(self) -> dict:
-        return self.profile_manager.get(self.active_profile_id) or self.profile_manager.all()[0]
+        return self.profile_manager.get(self.active_profile_id) or {}
+
+    def _has_active_profile(self) -> bool:
+        return bool(self.active_profile_id and self.profile_manager.get(self.active_profile_id))
 
     def _instance_dir(self) -> Path:
+        if not self._has_active_profile():
+            return self.game_root / "instances" / ".no-profile-selected"
         return self.profile_manager.instance_dir(self.active_profile_id)
 
     def _profile_game_root(self) -> Path:
         profile = self._active_profile()
-        if str(profile.get("storage_root", "legacy")) == "shared":
+        if not profile or str(profile.get("storage_root", "shared")) == "shared":
             return self.game_root
         legacy = self._instance_dir()
         versions = legacy / "versions"
@@ -1113,27 +1334,36 @@ class LauncherWindow(QMainWindow):
         return self.game_root
 
     def _refresh_installed_versions(self):
+        """Главный экран показывает версии из обычной общей папки Minecraft."""
         if not hasattr(self, "installed_combo"):
             return
         previous = self.installed_combo.currentData()
         self.installed_combo.blockSignals(True)
         self.installed_combo.clear()
         try:
-            items = mll.utils.get_installed_versions(str(self._profile_game_root()))
+            items = mll.utils.get_installed_versions(str(self.game_root))
         except Exception:
             items = []
-            versions_path = self._profile_game_root() / "versions"
+            versions_path = self.game_root / "versions"
             if versions_path.is_dir():
                 for folder in versions_path.iterdir():
                     if (folder / f"{folder.name}.json").is_file():
                         items.append({"id": folder.name})
         for item in items:
             version_id = item.get("id") if isinstance(item, dict) else str(item)
-            if version_id:
-                self.installed_combo.addItem(str(version_id), str(version_id))
-        profile = self._active_profile()
-        preferred = profile.get("installed_version_id", "") or previous
-        pos = self.installed_combo.findData(preferred)
+            if not version_id:
+                continue
+            # Каталог главной страницы — только обычные Vanilla-версии.
+            # Forge/Fabric/NeoForge/Quilt устанавливаются и запускаются из профилей.
+            try:
+                metadata = read_version_metadata(self.game_root, str(version_id))
+                if metadata.get("loader") != "vanilla":
+                    continue
+            except (OSError, ValueError, KeyError, TypeError):
+                # Не показываем сомнительную запись, если metadata повреждены.
+                continue
+            self.installed_combo.addItem(str(version_id), str(version_id))
+        pos = self.installed_combo.findData(previous)
         if pos >= 0:
             self.installed_combo.setCurrentIndex(pos)
         if not self.installed_combo.count():
@@ -1141,110 +1371,161 @@ class LauncherWindow(QMainWindow):
         self.installed_combo.blockSignals(False)
 
     def _installed_version_changed(self, index: int):
-        if index < 0 or not hasattr(self, "installed_combo"):
-            return
-        version_id = self.installed_combo.itemData(index)
-        if not version_id:
-            return
-        profile = self._active_profile()
-        if str(profile.get("installed_version_id", "")) != str(version_id):
-            try:
-                metadata = read_version_metadata(self._profile_game_root(), str(version_id))
-                self.profile_manager.update(self.active_profile_id, **metadata)
-            except Exception:
-                log.exception("Не удалось прочитать метаданные локальной версии %s", version_id)
-                self.profile_manager.update(self.active_profile_id, installed_version_id=str(version_id))
-            self._update_profile_folder_label()
+        # Список обычной игры не изменяет выбранный профиль сборки.
+        return
 
-    def install_selected(self):
-        if self.maintenance_mode or self.minimum_version_block:
-            self._notify("Установка временно недоступна", self._policy_message(), "warning", 6500)
-            return
+    def _start_install(self, minecraft_version: str, loader: str, loader_version: str,
+                       profile_id: str = "", instance_dir: Path | None = None):
         if self.install_worker and self.install_worker.isRunning():
             return
-        version = self.version_combo.currentData()
-        if not version:
-            self._notify("Список версий загружается",
-                         "Подожди завершения загрузки списка Minecraft и повтори установку.", "info")
-            return
-        profile = self._active_profile()
-        loader = self.loader_combo.currentData() or "vanilla"
         java_path = self.java_edit.text().strip() if hasattr(self, "java_edit") else str(
             self.settings.value("game/java_path", ""))
         auto_java = self.auto_java_check.isChecked() if hasattr(self, "auto_java_check") else self.settings.value(
             "game/auto_java", True, type=bool)
         self.install_button.setEnabled(False)
+        if hasattr(self, "install_profile_button"):
+            self.install_profile_button.setEnabled(False)
         self.install_progress.setValue(0)
         self.install_progress.show()
         self.install_status.setText("Подготовка к установке…")
         self._set_status("установка Minecraft")
-        self._install_profile_id = self.active_profile_id
+        self._install_profile_id = profile_id
+        profile = self.profile_manager.get(profile_id) if profile_id else {"name": "Обычный Minecraft"}
+        target_instance = instance_dir or self.game_root
         self.install_worker = InstallMinecraftWorker(
-            profile, str(self._profile_game_root()), str(self._instance_dir()), str(version), loader,
-            self.loader_version_edit.text().strip(), java_path, auto_java,
+            profile or {}, str(self.game_root), str(target_instance), str(minecraft_version),
+            loader or "vanilla", loader_version or "", java_path, auto_java,
         )
         self.install_worker.progress.connect(self._install_progress)
         self.install_worker.completed.connect(self._install_completed)
         self.install_worker.failed.connect(self._install_failed)
         self.install_worker.start()
 
+    def install_selected(self):
+        """Ставит чистую Vanilla-версию в обычный каталог игры, без профиля."""
+        if self.maintenance_mode or self.minimum_version_block:
+            self._notify("Установка временно недоступна", self._policy_message(), "warning", 6500)
+            return
+        version = self.version_combo.currentData()
+        if not version:
+            self._notify("Список версий загружается",
+                         "Подожди завершения загрузки списка Minecraft и повтори установку.", "info")
+            return
+        self._start_install(str(version), "vanilla", "", profile_id="", instance_dir=self.game_root)
+
+    def install_profile(self):
+        if self.maintenance_mode or self.minimum_version_block:
+            self._notify("Установка временно недоступна", self._policy_message(), "warning", 6500)
+            return
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Сначала создай или выбери профиль.", "info")
+            return
+        if self.install_worker and self.install_worker.isRunning():
+            return
+        self.save_profile_setup(show_notice=False)
+        profile = self._active_profile()
+        version = str(profile.get("minecraft_version", "")).strip()
+        if not version:
+            self._notify("Не выбрана версия Minecraft", "Выбери Minecraft в параметрах сборки.", "warning")
+            return
+        self._start_install(version, str(profile.get("loader", "vanilla")),
+                            str(profile.get("loader_version", "")), self.active_profile_id,
+                            self._instance_dir())
+
     def _install_progress(self, percent: int, status: str):
         if percent >= 0:
             self.install_progress.setValue(percent)
         self.install_status.setText(status)
+        if hasattr(self, "profile_setup_status") and self._install_profile_id:
+            self.profile_setup_status.setText(status)
         self._set_status(status)
 
     def _install_completed(self, result: dict):
         self.install_button.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
+        if hasattr(self, "install_profile_button"):
+            self.install_profile_button.setEnabled(
+                self._has_active_profile() and not (self.maintenance_mode or self.minimum_version_block))
         self.install_progress.setValue(100)
         self.install_status.setText(f"Готово: {result['installed_version_id']}")
-        profile_id = self._install_profile_id or self.active_profile_id
-        profile = self.profile_manager.get(profile_id)
-        if profile:
+        profile_id = self._install_profile_id
+        self._install_profile_id = None
+        if profile_id and self.profile_manager.get(profile_id):
             self.profile_manager.update(
                 profile_id,
                 minecraft_version=result["minecraft_version"], loader=result["loader"],
                 loader_version=result["loader_version"], installed_version_id=result["installed_version_id"],
-                storage_root="shared" if profile.get("storage_root") == "shared" else "legacy",
+                storage_root="shared",
             )
+            if hasattr(self, "profile_setup_status") and profile_id == self.active_profile_id:
+                self.profile_setup_status.setText(f"Сборка установлена: {result['installed_version_id']}")
         self._refresh_profiles()
         self._refresh_installed_versions()
         if profile_id == self.active_profile_id:
             self._refresh_mod_list()
-        log.info("Версия установлена для профиля %s: %s", profile_id, result)
+        log.info("Установка завершена; profile=%s result=%s", profile_id or "обычная игра", result)
         self._set_status("установка завершена")
 
     def _install_failed(self, message: str):
         self.install_button.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
+        if hasattr(self, "install_profile_button"):
+            self.install_profile_button.setEnabled(
+                self._has_active_profile() and not (self.maintenance_mode or self.minimum_version_block))
         self.install_status.setText("Установка не завершена. Подробности в логах.")
+        if hasattr(self, "profile_setup_status") and self._install_profile_id:
+            self.profile_setup_status.setText("Установка не завершена. Подробности в логах.")
+        self._install_profile_id = None
         self._set_status("ошибка установки")
         self._notify("Не удалось установить Minecraft", message, "error", 8000)
 
-    def launch_selected(self):
-        if self.maintenance_mode or self.minimum_version_block:
-            self._notify("Запуск временно недоступен", self._policy_message(), "warning", 6500)
-            return
+    def _build_launch_account(self) -> dict | None:
         nickname = self.nickname_edit.text().strip() if hasattr(self, "nickname_edit") else ""
         if not re.fullmatch(r"[A-Za-z0-9_]{3,16}", nickname):
             self._notify("Проверь никнейм",
                          "Ник должен содержать 3–16 символов: только латинские буквы, цифры и подчёркивание.",
                          "warning")
-            self.nickname_edit.setFocus()
-            return
-
-        # Оффлайн режим
-        md5 = hashlib.md5(f"OfflinePlayer:{nickname}".encode('utf-8')).digest()
+            if hasattr(self, "nickname_edit"):
+                self.nickname_edit.setFocus()
+            return None
+        md5 = hashlib.md5(f"OfflinePlayer:{nickname}".encode("utf-8")).digest()
         offline_uuid = str(uuid.UUID(bytes=md5, version=3)).replace("-", "")
-        account = {
-            "name": nickname,
-            "id": offline_uuid,
-            "access_token": "0",
-            "user_type": "legacy"
-        }
+        account = {"name": nickname, "id": offline_uuid, "access_token": "0", "user_type": "legacy"}
+        self.settings.setValue("profile/nickname", nickname)
+        self.settings.sync()
+        return account
 
+    def launch_selected(self):
+        if self.maintenance_mode or self.minimum_version_block:
+            self._notify("Запуск временно недоступен", self._policy_message(), "warning", 6500)
+            return
         version_id = self.installed_combo.currentData()
         if not version_id:
-            self._notify("Нет установленной версии", "Сначала установи Minecraft в активный профиль.", "warning")
+            self._notify("Нет установленной версии", "Сначала установи Minecraft без профиля.", "warning")
+            return
+        account = self._build_launch_account()
+        if account:
+            self._start_launch(str(version_id), self.game_root, self.game_root, account, self.play_button)
+
+    def launch_active_profile(self):
+        if self.maintenance_mode or self.minimum_version_block:
+            self._notify("Запуск временно недоступен", self._policy_message(), "warning", 6500)
+            return
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Сначала создай или выбери профиль.", "info")
+            return
+        self.save_profile_setup(show_notice=False)
+        profile = self._active_profile()
+        version_id = str(profile.get("installed_version_id", "")).strip()
+        if not version_id:
+            self._notify("Сборка ещё не установлена", "Нажми «Установить / проверить сборку».", "warning")
+            return
+        account = self._build_launch_account()
+        if account:
+            self._start_launch(version_id, self._profile_game_root(), self._instance_dir(), account,
+                               self.play_profile_button)
+
+    def _start_launch(self, version_id: str, game_root: Path, instance_dir: Path,
+                      account: dict, button: QPushButton):
+        if self.launch_worker and self.launch_worker.isRunning():
             return
         ram = self.ram_spin.value() if hasattr(self, "ram_spin") else int(self.settings.value("game/ram", 4))
         java_path = self.java_edit.text().strip() if hasattr(self, "java_edit") else str(
@@ -1253,29 +1534,74 @@ class LauncherWindow(QMainWindow):
             "game/auto_java", True, type=bool)
         jvm_arguments = self.jvm_edit.text().strip() if hasattr(self, "jvm_edit") else str(
             self.settings.value("game/jvm_arguments", ""))
-        self.settings.setValue("profile/nickname", nickname)
-        self.settings.sync()
-
-        self.play_button.setEnabled(False)
+        button.setEnabled(False)
+        self._launch_button_in_use = button
+        self._discord_game_version = str(version_id)
+        self._discord_game_nickname = str(account.get("name", "Minecraft player"))
         self._set_status("запуск Minecraft")
-
         self.launch_worker = LaunchWorker(
-            str(self._profile_game_root()), str(self._instance_dir()), str(version_id), account, ram,
+            str(game_root), str(instance_dir), str(version_id), account, ram,
             java_path, auto_java, jvm_arguments,
         )
         self.launch_worker.progress.connect(self._set_status)
         self.launch_worker.started_game.connect(self._game_started)
+        self.launch_worker.game_process_started.connect(self._game_process_started)
         self.launch_worker.failed.connect(self._launch_failed)
         self.launch_worker.start()
 
+    def _configure_discord_presence(self):
+        enabled = self.discord_presence_check.isChecked() if hasattr(self, "discord_presence_check") else self.settings.value("discord/enabled", False, type=bool)
+        client_id = self.discord_client_id_edit.text().strip() if hasattr(self, "discord_client_id_edit") else str(self.settings.value("discord/client_id", "")).strip()
+        self.discord_presence.configure(bool(enabled), client_id)
+        if self._game_process_pid and psutil.pid_exists(self._game_process_pid):
+            self._publish_game_presence()
+        else:
+            self.discord_presence.set_idle()
+
+    def _game_process_started(self, pid: int):
+        self._game_process_pid = int(pid)
+        self._discord_game_started_at = int(time.time() * 1000)
+        self._publish_game_presence()
+
+    def _publish_game_presence(self):
+        if self._game_process_pid and self._discord_game_version:
+            self.discord_presence.set_playing(
+                self._discord_game_version,
+                self._discord_game_nickname,
+                self._discord_game_started_at or None,
+            )
+
+    def _monitor_game_process(self):
+        if self._game_process_pid:
+            if psutil.pid_exists(self._game_process_pid):
+                self._publish_game_presence()
+            else:
+                self._game_process_pid = 0
+                self._discord_game_version = ""
+                self._discord_game_nickname = ""
+                self._discord_game_started_at = 0
+                self.discord_presence.set_idle()
+        else:
+            self.discord_presence.set_idle()
+
     def _game_started(self, message: str):
-        self.play_button.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
+        if self._launch_button_in_use is not None:
+            self._launch_button_in_use.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
+        self._launch_button_in_use = None
+        self._publish_game_presence()
         self._set_status("Minecraft запущен")
         self.install_status.setText(message)
         log.info(message)
 
     def _launch_failed(self, message: str):
-        self.play_button.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
+        if self._launch_button_in_use is not None:
+            self._launch_button_in_use.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
+        self._launch_button_in_use = None
+        self._game_process_pid = 0
+        self._discord_game_version = ""
+        self._discord_game_nickname = ""
+        self._discord_game_started_at = 0
+        self.discord_presence.set_idle()
         self._set_status("ошибка запуска")
         self._notify("Не удалось запустить Minecraft", message, "error", 8000)
 
@@ -1342,19 +1668,23 @@ class LauncherWindow(QMainWindow):
             self.settings.setValue("game/auto_java", self.auto_java_check.isChecked())
             self.settings.setValue("game/jvm_arguments", self.jvm_edit.text().strip())
             self.settings.setValue("updates/auto_install", self.auto_update_check.isChecked())
+            self.settings.setValue("versions/show_snapshots", self.show_snapshots_check.isChecked())
+            self.settings.setValue("discord/enabled", self.discord_presence_check.isChecked())
+            self.settings.setValue("discord/client_id", self.discord_client_id_edit.text().strip())
             self.settings.setValue("profile/nickname", self.nickname_edit.text().strip())
             self.appearance_geometry = self._collect_appearance_geometry()
             mode = str(self.theme_combo.currentData() or "custom")
             self.appearance_manager.save(mode, self.appearance_palette, self.appearance_geometry)
             self.settings.sync()
+            self._configure_discord_presence()
 
             if new_root != old_root:
                 previous_profile_id = self.active_profile_id
                 self.game_root = new_root
                 self.profile_manager = ProfileManager(self.game_root)
                 profiles = self.profile_manager.all()
-                self.active_profile_id = previous_profile_id if self.profile_manager.get(previous_profile_id) else \
-                profiles[0]["id"]
+                self.active_profile_id = (previous_profile_id if self.profile_manager.get(previous_profile_id)
+                                          else (profiles[0]["id"] if profiles else ""))
                 self.settings.setValue("profiles/active", self.active_profile_id)
                 self.settings.sync()
                 self._refresh_profiles()
@@ -1413,27 +1743,29 @@ class LauncherWindow(QMainWindow):
     # -------------------------- Profiles --------------------------
     def _refresh_profiles(self):
         profiles = self.profile_manager.all()
-        for combo in (getattr(self, "game_profile_combo", None), getattr(self, "profiles_combo", None)):
-            if combo is None:
-                continue
+        combo = getattr(self, "profiles_combo", None)
+        if combo is not None:
             combo.blockSignals(True)
             combo.clear()
             for profile in profiles:
                 combo.addItem(profile["name"], profile["id"])
+            if not profiles:
+                combo.addItem("Сборки пока не созданы", None)
             pos = combo.findData(self.active_profile_id)
             if pos >= 0:
                 combo.setCurrentIndex(pos)
             combo.blockSignals(False)
+        has_profile = self._has_active_profile()
+        for name in ("rename_profile_button", "delete_profile_button", "save_profile_button",
+                     "install_profile_button", "play_profile_button"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(has_profile)
+        if hasattr(self, "create_profile_button"):
+            self.create_profile_button.setEnabled(True)
         self._update_profile_folder_label()
         if hasattr(self, "profile_mod_list"):
             self._refresh_mod_list()
-
-    def _profile_combo_changed(self, index: int):
-        if index < 0:
-            return
-        profile_id = self.game_profile_combo.itemData(index)
-        if profile_id:
-            self._set_active_profile(str(profile_id))
 
     def _profile_page_combo_changed(self, index: int):
         if index < 0:
@@ -1449,80 +1781,208 @@ class LauncherWindow(QMainWindow):
         self.settings.setValue("profiles/active", profile_id)
         self.settings.sync()
         self._refresh_profiles()
-        self._refresh_installed_versions()
+        self._refresh_profile_setup_controls()
+        self._refresh_mod_list()
+        if self.stack.currentIndex() == 1:
+            self.search_mods()
+
+    @staticmethod
+    def _set_combo_value(combo, value: str):
+        pos = combo.findData(value)
+        if pos < 0 and value:
+            combo.addItem(value, value)
+            pos = combo.findData(value)
+        if pos >= 0:
+            combo.setCurrentIndex(pos)
+
+    def _refresh_profile_setup_controls(self):
+        if not hasattr(self, "profile_setup_version_combo"):
+            return
         profile = self._active_profile()
-        if hasattr(self, "version_combo"):
-            mc_version = str(profile.get("minecraft_version", ""))
-            if mc_version:
-                pos = self.version_combo.findData(mc_version)
-                if pos >= 0:
-                    self.version_combo.setCurrentIndex(pos)
-        if hasattr(self, "loader_combo"):
-            loader_pos = self.loader_combo.findData(str(profile.get("loader", "vanilla")))
-            if loader_pos >= 0:
-                self.loader_combo.setCurrentIndex(loader_pos)
-        if hasattr(self, "loader_version_edit"):
-            self.loader_version_edit.setText(str(profile.get("loader_version", "")))
-        if hasattr(self, "profile_mod_list"):
-            self._refresh_mod_list()
+        self.profile_setup_version_combo.blockSignals(True)
+        if not self.profile_setup_version_combo.count():
+            for item in self._visible_minecraft_versions():
+                version_id = str(item.get("id", ""))
+                if version_id:
+                    self.profile_setup_version_combo.addItem(self._version_display_name(item), version_id)
+        saved_minecraft = str(profile.get("minecraft_version", ""))
+        saved_index = self.profile_setup_version_combo.findData(saved_minecraft)
+        if saved_index >= 0:
+            self.profile_setup_version_combo.setCurrentIndex(saved_index)
+        elif self.profile_setup_version_combo.count():
+            release = next((item for item in self._visible_minecraft_versions()
+                            if str(item.get("type", "")).lower() == "release"), None)
+            fallback = str(release.get("id", "")) if release else ""
+            fallback_index = self.profile_setup_version_combo.findData(fallback)
+            if fallback_index >= 0:
+                self.profile_setup_version_combo.setCurrentIndex(fallback_index)
+        self.profile_setup_version_combo.blockSignals(False)
+        self.profile_setup_loader_combo.blockSignals(True)
+        self._set_combo_value(self.profile_setup_loader_combo, str(profile.get("loader", "vanilla")))
+        self.profile_setup_loader_combo.blockSignals(False)
+        self._load_profile_loader_versions(preserve=str(profile.get("loader_version", "")))
+        self._update_profile_folder_label()
+
+    def _profile_setup_version_changed(self, *_args):
+        self._load_profile_loader_versions()
+        self._profile_setup_changed()
+
+    def _profile_setup_loader_changed(self, *_args):
+        self._load_profile_loader_versions()
+        self._profile_setup_changed()
+
+    def _profile_setup_changed(self, *_args):
+        if not hasattr(self, "profile_setup_status") or not self._has_active_profile():
+            return
+        profile = self._active_profile()
+        selected = {
+            "minecraft_version": str(self.profile_setup_version_combo.currentData() or ""),
+            "loader": str(self.profile_setup_loader_combo.currentData() or "vanilla"),
+            "loader_version": str(self.profile_setup_loader_version_combo.currentData() or ""),
+        }
+        if any(str(profile.get(key, "")) != value for key, value in selected.items()):
+            self.profile_setup_status.setText("Есть несохранённые параметры сборки. Нажми «Сохранить параметры».")
+
+    def _load_profile_loader_versions(self, preserve: str = ""):
+        if not hasattr(self, "profile_setup_loader_version_combo"):
+            return
+        loader = str(self.profile_setup_loader_combo.currentData() or "vanilla")
+        minecraft = str(self.profile_setup_version_combo.currentData() or "")
+        current = preserve or str(self.profile_setup_loader_version_combo.currentData() or "")
+        self.profile_setup_loader_version_combo.blockSignals(True)
+        self.profile_setup_loader_version_combo.clear()
+        self.profile_setup_loader_version_combo.addItem("Последняя стабильная", "")
+        self.profile_setup_loader_version_combo.blockSignals(False)
+        self.profile_setup_loader_version_combo.setEnabled(loader != "vanilla")
+        if loader == "vanilla":
+            self.profile_setup_status.setText("Vanilla не требует отдельной версии загрузчика.")
+            return
+        if not minecraft:
+            self.profile_setup_status.setText("Сначала выбери версию Minecraft.")
+            return
+        self.profile_setup_status.setText(f"Загружаем версии {loader.title()} для Minecraft {minecraft}…")
+        worker = LoaderVersionListWorker(loader, minecraft, self)
+        worker.loaded.connect(self._profile_loader_versions_loaded)
+        worker.failed.connect(self._profile_loader_versions_failed)
+        self._retain_worker(worker)
+        self.profile_loader_worker = worker
+        worker.start()
+        if current:
+            # Preserve a value from imported profiles even if the API no longer lists it.
+            self.profile_setup_loader_version_combo.addItem(current, current)
+            self.profile_setup_loader_version_combo.setCurrentIndex(
+                self.profile_setup_loader_version_combo.findData(current))
+
+    def _profile_loader_versions_loaded(self, loader: str, minecraft: str, versions: list):
+        if (loader != str(self.profile_setup_loader_combo.currentData() or "vanilla")
+                or minecraft != str(self.profile_setup_version_combo.currentData() or "")):
+            return
+        current = str(self.profile_setup_loader_version_combo.currentData() or "")
+        self.profile_setup_loader_version_combo.blockSignals(True)
+        self.profile_setup_loader_version_combo.clear()
+        self.profile_setup_loader_version_combo.addItem("Последняя стабильная", "")
+        for version in versions:
+            self.profile_setup_loader_version_combo.addItem(str(version), str(version))
+        if current and self.profile_setup_loader_version_combo.findData(current) < 0:
+            self.profile_setup_loader_version_combo.addItem(current, current)
+        pos = self.profile_setup_loader_version_combo.findData(current)
+        self.profile_setup_loader_version_combo.setCurrentIndex(pos if pos >= 0 else 0)
+        self.profile_setup_loader_version_combo.blockSignals(False)
+        self.profile_setup_loader_version_combo.setEnabled(bool(versions) or bool(current))
+        self.profile_setup_status.setText(
+            f"Доступно стабильных версий {loader.title()}: {len(versions)}. Можно оставить последнюю стабильную."
+            if versions else "Список версий пуст. Попробуй другую версию Minecraft или оставь выбор «последняя стабильная»."
+        )
+
+    def _profile_loader_versions_failed(self, loader: str, minecraft: str, message: str):
+        if (loader != str(self.profile_setup_loader_combo.currentData() or "vanilla")
+                or minecraft != str(self.profile_setup_version_combo.currentData() or "")):
+            return
+        self.profile_setup_loader_version_combo.setEnabled(True)
+        self.profile_setup_status.setText(f"Не удалось загрузить список версий загрузчика: {message}")
+
+    def save_profile_setup(self, show_notice: bool = True) -> bool:
+        if not self._has_active_profile():
+            if show_notice:
+                self._notify("Сборка не выбрана", "Сначала создай профиль сборки.", "info")
+            return False
+        minecraft = str(self.profile_setup_version_combo.currentData() or "").strip()
+        loader = str(self.profile_setup_loader_combo.currentData() or "vanilla").strip().lower()
+        loader_version = str(self.profile_setup_loader_version_combo.currentData() or "").strip()
+        if not minecraft:
+            if show_notice:
+                self._notify("Не выбрана версия Minecraft", "Укажи версию Minecraft для сборки.", "warning")
+            return False
+        try:
+            self.profile_manager.update(self.active_profile_id, minecraft_version=minecraft,
+                                        loader=loader, loader_version=loader_version)
+            self._update_profile_folder_label()
+            self.profile_setup_status.setText("Параметры сборки сохранены.")
+            if show_notice:
+                self._notify("Параметры сохранены", f"Minecraft {minecraft} · {loader.title()} {loader_version or 'latest'}",
+                             "success")
+            return True
+        except Exception as exc:
+            self._notify("Не удалось сохранить параметры сборки", str(exc), "error")
+            return False
 
     def _update_profile_folder_label(self):
         profile = self._active_profile()
+        has_profile = self._has_active_profile()
         if hasattr(self, "profile_folder_label"):
-            self.profile_folder_label.setText(
-                f"Папка профиля: {self._instance_dir()}\nОбщие версии/библиотеки: {self._profile_game_root()}")
+            if has_profile:
+                self.profile_folder_label.setText(
+                    f"Папка сборки: {self._instance_dir()}\nОбщие версии и библиотеки: {self._profile_game_root()}")
+            else:
+                self.profile_folder_label.setText("Профили необязательны. Создай сборку только тогда, когда нужны отдельные моды и настройки.")
         if hasattr(self, "profile_summary_label"):
-            self.profile_summary_label.setText(
-                f"Minecraft: {profile.get('minecraft_version') or 'не выбрана'}  ·  "
-                f"Загрузчик: {profile.get('loader', 'vanilla')}  ·  "
-                f"Установленная версия: {profile.get('installed_version_id') or 'нет'}"
-            )
-        if hasattr(self, "game_profile_combo"):
-            self.game_profile_combo.blockSignals(True)
-            pos = self.game_profile_combo.findData(self.active_profile_id)
-            if pos >= 0:
-                self.game_profile_combo.setCurrentIndex(pos)
-            self.game_profile_combo.blockSignals(False)
+            if has_profile:
+                self.profile_summary_label.setText(
+                    f"Сборка: {profile.get('name', 'Без названия')}  ·  "
+                    f"Minecraft: {profile.get('minecraft_version') or 'не выбрана'}  ·  "
+                    f"Загрузчик: {str(profile.get('loader', 'vanilla')).title()}"
+                )
+            else:
+                self.profile_summary_label.setText("Пока нет пользовательских сборок")
+        for name in ("profile_setup_version_combo", "profile_setup_loader_combo",
+                     "profile_setup_loader_version_combo"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(has_profile and (name != "profile_setup_loader_version_combo"
+                                                    or str(self.profile_setup_loader_combo.currentData()) != "vanilla"))
 
     def create_profile(self):
         if not self.versions:
             self._notify("Список Minecraft ещё загружается", "Подожди, пока обновится список официальных версий.",
                          "info")
             return
-        dialog = CreateProfileDialog(self.versions, self)
+        dialog = CreateProfileDialog(self._visible_minecraft_versions(), self)
         dialog.setStyleSheet(self.styleSheet())
         if dialog.exec_() != dialog.Accepted:
             return
         values = dialog.values()
         try:
             profile = self.profile_manager.create(
-                values["name"], description="Игровой профиль FiercyLauncher",
+                values["name"], description="Игровая сборка FiercyLauncher",
                 minecraft_version=values["minecraft_version"], loader=values["loader"],
-                loader_version=values["loader_version"], storage_root="shared",
+                loader_version=values["loader_version"], storage_root="shared", kind="custom",
             )
             self._set_active_profile(profile["id"])
-            version_pos = self.version_combo.findData(values["minecraft_version"])
-            if version_pos < 0:
-                self.version_combo.addItem(values["minecraft_version"], values["minecraft_version"])
-                version_pos = self.version_combo.findData(values["minecraft_version"])
-            self.version_combo.setCurrentIndex(version_pos)
-            loader_pos = self.loader_combo.findData(values["loader"])
-            if loader_pos >= 0:
-                self.loader_combo.setCurrentIndex(loader_pos)
-            self.loader_version_edit.setText(values["loader_version"])
-            self._notify("Профиль создан",
-                         f"Профиль «{values['name']}» создан. Начинается установка Minecraft и загрузчика.", "success",
-                         5000)
-            self.navigate(0)
-            self.install_selected()
+            self.profile_setup_status.setText("Сборка создана. Начинается установка выбранной версии и загрузчика…")
+            self._notify("Сборка создана", f"«{values['name']}» · Minecraft {values['minecraft_version']} · {values['loader']}",
+                         "success", 5000)
+            self.install_profile()
         except ProfileError as exc:
-            self._notify("Не удалось создать профиль", str(exc), "error")
+            self._notify("Не удалось создать сборку", str(exc), "error")
 
     # -------------------------- Mods and imports --------------------------
     def _refresh_mod_list(self):
         if not hasattr(self, "profile_mod_list"):
             return
         self.profile_mod_list.clear()
+        if not self._has_active_profile():
+            self.mod_count_label.setText("Создай или выбери сборку, чтобы управлять её содержимым.")
+            return
         try:
             mods = list_mod_files(self._instance_dir())
         except Exception as exc:
@@ -1537,8 +1997,13 @@ class LauncherWindow(QMainWindow):
             self.profile_mod_list.addItem(item)
         enabled = sum(1 for item in mods if item["enabled"])
         disabled = len(mods) - enabled
+        resource_count = len(list((self._instance_dir() / "resourcepacks").glob("*"))) if (self._instance_dir() / "resourcepacks").exists() else 0
+        shader_count = len(list((self._instance_dir() / "shaderpacks").glob("*"))) if (self._instance_dir() / "shaderpacks").exists() else 0
+        map_count = len([path for path in (self._instance_dir() / "saves").iterdir() if path.is_dir()]) if (self._instance_dir() / "saves").exists() else 0
         self.mod_count_label.setText(
-            f"Всего: {len(mods)}  ·  Включено: {enabled}  ·  Отключено: {disabled}  ·  Папка: {self._instance_dir() / 'mods'}")
+            f"Моды: {len(mods)} (включено {enabled}, отключено {disabled})  ·  "
+            f"Ресурспаки: {resource_count}  ·  Шейдеры: {shader_count}  ·  Карты: {map_count}  ·  "
+            f"Папка mods: {self._instance_dir() / 'mods'}")
 
     def _toggle_mod_item(self, item):
         if item:
@@ -1546,6 +2011,9 @@ class LauncherWindow(QMainWindow):
             self.toggle_selected_mod()
 
     def toggle_selected_mod(self):
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Сначала создай профиль.", "info")
+            return
         item = self.profile_mod_list.currentItem()
         if item is None:
             self._notify("Мод не выбран", "Выбери мод из списка.", "info")
@@ -1559,6 +2027,8 @@ class LauncherWindow(QMainWindow):
             self._notify("Не удалось изменить мод", str(exc), "error")
 
     def remove_selected_mod(self):
+        if not self._has_active_profile():
+            return
         item = self.profile_mod_list.currentItem()
         if item is None:
             self._notify("Мод не выбран", "Сначала выбери мод.", "info")
@@ -1567,7 +2037,7 @@ class LauncherWindow(QMainWindow):
         path = Path(info.get("path", ""))
         try:
             if path.parent.resolve() != (self._instance_dir() / "mods").resolve() or not path.is_file():
-                raise ValueError("Выбранный файл больше не находится в папке mods этого профиля.")
+                raise ValueError("Выбранный файл больше не находится в папке mods этой сборки.")
             path.unlink()
             self._notify("Мод удалён", path.name, "success")
             self._refresh_mod_list()
@@ -1575,6 +2045,9 @@ class LauncherWindow(QMainWindow):
             self._notify("Не удалось удалить мод", str(exc), "error")
 
     def add_local_mod_files(self):
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Сначала создай профиль сборки.", "info")
+            return
         files, _ = QFileDialog.getOpenFileNames(self, "Добавить локальные JAR-моды", "", "Minecraft mods (*.jar)")
         if not files:
             return
@@ -1585,127 +2058,280 @@ class LauncherWindow(QMainWindow):
         except Exception as exc:
             self._notify("Не удалось добавить моды", str(exc), "error")
 
+    def _open_profile_subfolder(self, name: str):
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Сначала создай профиль сборки.", "info")
+            return
+        allowed = {"mods", "config", "resourcepacks", "shaderpacks", "saves", "screenshots"}
+        if name not in allowed:
+            return
+        self._open_folder(self._instance_dir() / name)
+
     def _current_mod_compatibility(self) -> tuple[str, str]:
         profile = self._active_profile()
-        game_version = str(profile.get("minecraft_version") or "").strip()
-        if not game_version:
-            game_version = str(self.version_combo.currentData() or "").strip()
-        loader = str(profile.get("loader") or "vanilla").lower()
-        return game_version, loader
+        return str(profile.get("minecraft_version", "")).strip(), str(profile.get("loader", "vanilla")).lower()
 
-    def _curseforge_api_key(self) -> str:
-        if keyring is None:
-            return ""
-        try:
-            return keyring.get_password("FiercyLauncher", "curseforge_api_key") or ""
-        except Exception:
-            log.exception("Не удалось прочитать CurseForge API key из Credential Manager")
-            return ""
+    def _profile_content_tab_changed(self, index: int):
+        if index == 1 and self.stack.currentIndex() == 1 and self._has_active_profile():
+            self.search_mods()
 
-    def configure_curseforge_key(self):
-        if keyring is None:
-            self._notify("Нужно системное хранилище",
-                         "Установи зависимости из requirements.txt. Ключ CurseForge хранится через Windows Credential Manager, а не в открытом JSON.",
-                         "warning", 7000)
-            return
-        key, accepted = QInputDialog.getText(self, "CurseForge API key", "Вставь личный API key CurseForge:",
-                                             QLineEdit.Password)
-        if not accepted:
-            return
-        key = key.strip()
-        if len(key) < 12:
-            self._notify("Ключ не сохранён", "Проверь, что скопировал полный API key CurseForge.", "warning")
-            return
-        try:
-            keyring.set_password("FiercyLauncher", "curseforge_api_key", key)
-            self._notify("CurseForge настроен", "Ключ сохранён в системном хранилище Windows.", "success")
-        except Exception as exc:
-            self._notify("Не удалось сохранить ключ", str(exc), "error")
+    def _catalog_filters_changed(self, *_args):
+        if self.profile_tabs.currentIndex() == 1:
+            self.search_mods()
 
-    def search_mods(self):
+    def search_mods(self, *_args, load_more: bool = False):
+        if not hasattr(self, "mod_catalog_widget"):
+            return
+        if self.profile_tabs.currentIndex() != 1:
+            return
+        if not self._has_active_profile():
+            self.mod_catalog_widget.clear("Сначала создай или выбери профиль сборки.")
+            self.mod_status_label.setText("Каталог показывает проекты для выбранного профиля.")
+            return
         if self.mod_search_worker and self.mod_search_worker.isRunning():
-            return
-        query = self.mod_search_edit.text().strip()
-        if not query:
-            self._notify("Укажи название мода", "Напиши, что нужно найти.", "info")
+            # При изменении фильтра после окончания текущего запроса выполняем
+            # новый поиск, а не теряем действие пользователя.
+            self._mod_search_pending = not load_more
             return
         game_version, loader = self._current_mod_compatibility()
         if not game_version:
-            self._notify("Не выбрана версия Minecraft", "Сначала создай профиль с версией Minecraft.", "warning")
+            self.mod_catalog_widget.clear("Сначала выбери и сохрани версию Minecraft в параметрах сборки.")
+            self.mod_status_label.setText("Для каталога нужна версия Minecraft в текущем профиле.")
             return
-        provider = str(self.mod_provider_combo.currentData() or "modrinth")
-        if provider == "curseforge":
-            api_key = self._curseforge_api_key()
-            if not api_key:
-                self._notify("CurseForge API key",
-                             "Сначала нажми «Настроить API key CurseForge». Modrinth можно использовать без ключа.",
-                             "warning", 7000)
-                return
-            worker = CurseForgeSearchWorker(query, game_version, loader, api_key, self)
-        else:
-            worker = ModrinthSearchWorker(query, game_version, loader, self)
-        self.mod_results_list.clear()
-        self.mod_status_label.setText(f"Поиск {query} для Minecraft {game_version} / {loader}…")
-        self._retain_worker(worker)
-        worker.loaded.connect(self._mod_search_loaded)
+
+        query = self.mod_search_edit.text().strip()
+        project_type = str(self.mod_content_type_combo.currentData() or "mod")
+        sort = str(self.mod_sort_combo.currentData() or "downloads")
+        filter_key = (query.casefold(), project_type, sort, game_version, loader)
+        if load_more and filter_key != self._mod_search_filter_key:
+            load_more = False
+        if not load_more:
+            self._mod_image_queue.clear()
+            self._mod_search_offset = 0
+            self._mod_search_total = 0
+            self._mod_search_filter_key = filter_key
+            self.mod_catalog_widget.clear("Загружаем популярные проекты Modrinth…")
+        elif self._mod_search_offset >= self._mod_search_total > 0:
+            return
+
+        offset = self._mod_search_offset if load_more else 0
+        self.mod_catalog_widget.set_loading(True, "Загружаем ещё проекты…" if load_more else
+                                            "Загружаем популярные проекты Modrinth…")
+        compatibility_label = f"Minecraft {game_version}"
+        if project_type == "mod" and loader and loader != "vanilla":
+            compatibility_label += f" · совместимость загрузчика проверяется в версиях проекта ({loader})"
+        self.mod_status_label.setText(f"{project_type.capitalize()} · {compatibility_label}")
+        worker = ModrinthSearchWorker(
+            query, game_version, loader, project_type, sort, offset=offset, limit=48, parent=self,
+        )
+        worker.loaded.connect(
+            lambda payload, append=load_more, key=filter_key: self._mod_search_loaded(payload, append, key)
+        )
         worker.failed.connect(self._mod_operation_failed)
+        worker.finished.connect(self._run_pending_mod_search)
+        self._retain_worker(worker)
         self.mod_search_worker = worker
         worker.start()
 
-    def _mod_search_loaded(self, results: list):
-        self.mod_results_list.clear()
+    def _run_pending_mod_search(self):
+        if getattr(self, "_mod_search_pending", False):
+            self._mod_search_pending = False
+            QTimer.singleShot(0, self.search_mods)
+
+    def _mod_search_loaded(self, payload: dict, append: bool = False, request_key=None):
+        current_key = (
+            self.mod_search_edit.text().strip().casefold(),
+            str(self.mod_content_type_combo.currentData() or "mod"),
+            str(self.mod_sort_combo.currentData() or "downloads"),
+            *self._current_mod_compatibility(),
+        )
+        if request_key is not None and request_key != current_key:
+            self.mod_catalog_widget.set_loading(False)
+            return
+
+        results = list(payload.get("results", []) or [])
+        total_hits = int(payload.get("total_hits", len(results)) or len(results))
+        offset = int(payload.get("offset", 0) or 0)
+        if not append:
+            self.mod_catalog_widget.clear()
+        if not results:
+            if not append:
+                self.mod_catalog_widget.set_empty(
+                    "Совместимых проектов не найдено. Попробуй очистить поиск или выбрать другой тип контента."
+                )
+                self._mod_search_offset = 0
+                self._mod_search_total = 0
+            else:
+                self.mod_catalog_widget.set_has_more(False)
+                self.mod_catalog_widget.count_label.setText(
+                    f"Показано {len(self.mod_catalog_widget.cards)} проектов. Больше результатов нет."
+                )
+            self.mod_status_label.setText("Попробуй очистить поиск или выбрать другой тип контента.")
+            self.mod_catalog_widget.set_loading(False)
+            return
+
+        _game_version, active_loader = self._current_mod_compatibility()
         for result in results:
-            downloads = result.get("downloads", 0)
-            item = QListWidgetItem(
-                f"{result.get('title', 'Мод')}   ·   {downloads:,} загрузок\n{result.get('description', '')}")
-            item.setData(Qt.UserRole, result)
-            self.mod_results_list.addItem(item)
-        self.mod_status_label.setText(
-            f"Найдено результатов: {len(results)}. Выбери мод и нажми «Установить выбранный мод».")
+            result["requires_loader"] = (
+                str(result.get("project_type", "mod")) == "mod" and active_loader == "vanilla"
+            )
+        cards = self.mod_catalog_widget.append_projects(results, total_hits)
+        for result, card in zip(results, cards):
+            icon_url = str(result.get("icon_url", ""))
+            if icon_url:
+                self._mod_image_queue.append((icon_url, card))
+        self._start_next_mod_image_workers()
+
+        self._mod_search_total = total_hits
+        self._mod_search_offset = offset + len(results)
+        self.mod_catalog_widget.set_loading(False)
+        self.mod_catalog_widget.set_has_more(self._mod_search_offset < total_hits and bool(results))
+        if results:
+            self.mod_status_label.setText(
+                "Проекты совместимы с выбранной версией Minecraft. Открой карточку для описания, галереи и версий."
+            )
+
+    def _start_next_mod_image_workers(self):
+        # Не создаём 48 одновременных QThread/HTTP-соединений: это блокировало
+        # прокрутку карточек на слабых ПК и вызывало скачки интерфейса.
+        while self._mod_image_queue and self._mod_image_active < self._mod_image_limit:
+            icon_url, card = self._mod_image_queue.pop(0)
+            if card is None:
+                continue
+            worker = ModrinthImageWorker(icon_url, self)
+            worker.loaded.connect(card.set_icon_bytes)
+            worker.finished.connect(lambda current=worker: self._forget_mod_image_worker(current))
+            self.mod_image_workers.append(worker)
+            self._mod_image_active += 1
+            self._retain_worker(worker)
+            worker.start()
+
+    def _forget_mod_image_worker(self, worker):
+        if worker in self.mod_image_workers:
+            self.mod_image_workers.remove(worker)
+        self._mod_image_active = max(0, self._mod_image_active - 1)
+        worker.deleteLater()
+        self._start_next_mod_image_workers()
 
     def _mod_operation_failed(self, message: str):
+        if hasattr(self, "mod_catalog_widget"):
+            self.mod_catalog_widget.set_loading(False, message)
         self.mod_status_label.setText(message)
-        self._notify("Операция с модом не выполнена", message, "error", 7500)
+        self._notify("Операция Modrinth не выполнена", message, "error", 7500)
 
-    def install_selected_mod_from_catalog(self):
-        item = self.mod_results_list.currentItem()
-        if item is None:
-            self._notify("Мод не выбран", "Выбери результат поиска.", "info")
+    def open_modrinth_project_details(self, project: dict):
+        if not self._has_active_profile():
+            return
+        if self.mod_details_worker and self.mod_details_worker.isRunning():
+            return
+        game_version, loader = self._current_mod_compatibility()
+        project_type = str(project.get("project_type", "mod"))
+        self._pending_details_project = dict(project)
+        self.mod_status_label.setText(f"Загружаем описание и версии «{project.get('title', '')}»…")
+        worker = ModrinthProjectDetailsWorker(project.get("project_id", ""), game_version, loader,
+                                              project_type, self)
+        worker.loaded.connect(self._mod_details_loaded)
+        worker.failed.connect(self._mod_operation_failed)
+        self._retain_worker(worker)
+        self.mod_details_worker = worker
+        worker.start()
+
+    def _mod_details_loaded(self, payload: dict):
+        project = dict(payload.get("project", {}) or {})
+        project.update({key: value for key, value in getattr(self, "_pending_details_project", {}).items()
+                        if key not in project or project.get(key) in (None, "", 0)})
+        versions = payload.get("versions", []) or []
+        dialog = ModrinthProjectDetailsDialog(project, versions, self)
+        _game_version, active_loader = self._current_mod_compatibility()
+        if str(project.get("project_type", "mod")) == "mod" and active_loader == "vanilla":
+            dialog.install_button.setEnabled(False)
+            dialog.install_button.setText("Сначала выбери загрузчик")
+            dialog.install_button.setToolTip(
+                "Для установки мода выбери Fabric, Forge, NeoForge или Quilt в параметрах сборки"
+            )
+        dialog.setStyleSheet(self.styleSheet())
+        icon_url = str(project.get("icon_url", ""))
+        if icon_url:
+            worker = ModrinthImageWorker(icon_url, dialog)
+            worker.loaded.connect(dialog.set_project_icon)
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+        if dialog.exec_() == dialog.Accepted:
+            self.install_modrinth_project(project, dialog.selected_version_id())
+
+    def install_modrinth_project(self, project: dict, version_id: str = ""):
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Выбери или создай профиль, куда установить контент.", "warning")
             return
         if self.mod_install_worker and self.mod_install_worker.isRunning():
             return
-        data = item.data(Qt.UserRole) or {}
         game_version, loader = self._current_mod_compatibility()
-        provider = str(self.mod_provider_combo.currentData() or "modrinth")
+        if not game_version:
+            self._notify("Не выбрана версия Minecraft", "Сохрани версию Minecraft в параметрах сборки.", "warning")
+            return
+        project_id = str(project.get("project_id", ""))
+        project_type = str(project.get("project_type", "mod"))
+        if project_type == "mod" and loader == "vanilla":
+            self._notify(
+                "Для модов нужен загрузчик",
+                "Сохрани в параметрах сборки Fabric, Forge, NeoForge или Quilt, затем повтори установку мода.",
+                "warning",
+            )
+            return
+        if not project_id:
+            self._notify("Modrinth не вернул ID проекта", "Не удалось определить проект для установки.", "error")
+            return
         profile_id = self.active_profile_id
-        instance_dir = self._instance_dir()
         self._mod_install_profile_id = profile_id
-        if provider == "curseforge":
-            worker = CurseForgeInstallWorker(data.get("project_id", ""), game_version, loader,
-                                             str(instance_dir), self._curseforge_api_key(), self)
-        else:
-            worker = ModrinthInstallWorker(data.get("project_id", ""), game_version, loader,
-                                           str(instance_dir), self)
+        self._mod_install_project_type = project_type
+        self._mod_install_project_name = str(project.get("title", project_id))
+        worker = ModrinthInstallWorker(project_id, game_version, loader, str(self._instance_dir()),
+                                       project_type, version_id, self)
         worker.completed.connect(self._mod_install_completed)
         worker.failed.connect(self._mod_operation_failed)
         worker.progress.connect(self.mod_status_label.setText)
         self._retain_worker(worker)
         self.mod_install_worker = worker
-        self.mod_status_label.setText("Начинается загрузка мода…")
+        self.mod_status_label.setText(f"Начинается установка «{self._mod_install_project_name}»…")
         worker.start()
 
     def _mod_install_completed(self, paths: list):
         profile_id = self._mod_install_profile_id or self.active_profile_id
         profile = self.profile_manager.get(profile_id)
+        if self._mod_install_project_type == "modpack" and paths:
+            self._start_downloaded_modpack_import(str(paths[0]), profile_id)
+            return
         if profile_id == self.active_profile_id:
             self._refresh_mod_list()
         names = ", ".join(Path(path).name for path in paths)
-        profile_name = profile.get("name", "профиля") if profile else "профиля"
-        if hasattr(self, "mod_status_label"):
-            self.mod_status_label.setText(f"Установлено в «{profile_name}»: {names}")
-        self._notify("Мод установлен", f"Профиль: {profile_name}\n{names}", "success")
+        profile_name = profile.get("name", "сборки") if profile else "сборки"
+        self.mod_status_label.setText(f"Установлено в «{profile_name}»: {names}")
+        self._notify("Контент установлен", f"{self._mod_install_project_name}\nСборка: {profile_name}\n{names}", "success")
+
+    def _start_downloaded_modpack_import(self, archive_path: str, profile_id: str):
+        if not Path(archive_path).is_file():
+            self._mod_operation_failed("Не удалось найти скачанный файл сборки Modrinth.")
+            return
+        self._pending_modpack_download = archive_path
+        self._modpack_profile_id = profile_id
+        instance_dir = self.profile_manager.instance_dir(profile_id)
+        worker = ModpackImportWorker(
+            archive_path, str(self.game_root), str(instance_dir),
+            str(self.settings.value("game/java_path", "")),
+            self.settings.value("game/auto_java", True, type=bool), "", self,
+        )
+        worker.progress.connect(self._modpack_progress)
+        worker.completed.connect(self._modpack_imported)
+        worker.failed.connect(self._modpack_import_failed)
+        self.modpack_worker = worker
+        self._retain_worker(worker)
+        self.mod_status_label.setText("Распаковываем сборку Modrinth и устанавливаем её Minecraft/загрузчик…")
+        worker.start()
 
     def import_local_version(self):
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Сначала создай профиль, в который импортировать версию.", "info")
+            return
         source_root = QFileDialog.getExistingDirectory(self, "Выбери папку .minecraft или папку другого лаунчера",
                                                        str(Path.home()))
         if not source_root:
@@ -1754,24 +2380,26 @@ class LauncherWindow(QMainWindow):
                 storage_root="shared", kind="imported",
             )
         self._refresh_profiles()
+        self._refresh_profile_setup_controls()
         self._refresh_installed_versions()
         if profile_id == self.active_profile_id:
             self._refresh_mod_list()
         self._notify("Локальная версия импортирована",
-                     f"Импортирована {result.get('installed_version_id')}. Моды и миры можно добавить в папку профиля.",
+                     f"Импортирована {result.get('installed_version_id')}. Моды и миры можно добавить в папку сборки.",
                      "success", 6500)
 
     def import_modpack(self):
+        if self.modpack_worker and self.modpack_worker.isRunning():
+            return
         archive_path, _ = QFileDialog.getOpenFileName(
-            self, "Импортировать сборку Minecraft", "",
-            "Сборки Minecraft (*.mrpack *.zip);;Все файлы (*.*)"
+            self, "Импортировать сборку Modrinth", "", "Сборки Modrinth (*.mrpack);;Все файлы (*.*)"
         )
         if not archive_path:
             return
-        if self.modpack_worker and self.modpack_worker.isRunning():
-            return
         try:
             metadata = inspect_modpack(archive_path)
+            if metadata.get("format") != "modrinth":
+                raise ValueError("Поддерживается только формат сборок Modrinth .mrpack.")
             if not metadata.get("minecraft_version"):
                 raise ValueError("В манифесте сборки не указана версия Minecraft.")
             profile = self.profile_manager.create(
@@ -1785,18 +2413,81 @@ class LauncherWindow(QMainWindow):
             worker = ModpackImportWorker(
                 archive_path, str(self.game_root), str(self._instance_dir()),
                 str(self.settings.value("game/java_path", "")),
-                self.settings.value("game/auto_java", True, type=bool),
-                self._curseforge_api_key(), self,
+                self.settings.value("game/auto_java", True, type=bool), "", self,
             )
-            worker.progress.connect(lambda value, message: self._modpack_progress(value, message))
+            worker.progress.connect(self._modpack_progress)
             worker.completed.connect(self._modpack_imported)
             worker.failed.connect(self._modpack_import_failed)
             self.modpack_worker = worker
             self._retain_worker(worker)
-            self.mod_status_label.setText("Подготовка импорта сборки…")
+            self.mod_status_label.setText("Подготовка импорта сборки Modrinth…")
             worker.start()
         except Exception as exc:
             self._notify("Не удалось прочитать сборку", str(exc), "error", 7000)
+
+    def import_map_zip(self):
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Создай профиль, в который нужно добавить карту.", "info")
+            return
+        archive_path, _ = QFileDialog.getOpenFileName(
+            self, "Импортировать карту Minecraft", "", "Архив карты (*.zip);;Все файлы (*.*)"
+        )
+        if not archive_path:
+            return
+        try:
+            archive_path = Path(archive_path)
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                members = archive.infolist()
+                total_uncompressed = sum(max(0, int(item.file_size)) for item in members)
+                if total_uncompressed > 8 * 1024 * 1024 * 1024:
+                    raise ValueError("Размер распакованной карты превышает лимит 8 ГБ.")
+                if len(members) > 100000:
+                    raise ValueError("В архиве слишком много файлов.")
+                level_entry = next((item for item in members
+                                    if PurePosixPath(item.filename.replace("\\", "/")).name.lower() == "level.dat"), None)
+                if level_entry is None:
+                    raise ValueError("В архиве не найден level.dat. Выбери ZIP с папкой готового мира Minecraft.")
+                level_path = PurePosixPath(level_entry.filename.replace("\\", "/"))
+                prefix = str(level_path.parent)
+                if prefix == ".":
+                    prefix = ""
+                world_name = (PurePosixPath(prefix).name if prefix else archive_path.stem).strip() or archive_path.stem
+                world_name = re.sub(r"[^A-Za-z0-9._ -]", "_", world_name)[:64]
+                saves_dir = self._instance_dir() / "saves"
+                target_root = (saves_dir / world_name).resolve()
+                saves_resolved = saves_dir.resolve()
+                if target_root.parent != saves_resolved:
+                    raise ValueError("Некорректное имя папки мира.")
+                target_root.mkdir(parents=True, exist_ok=True)
+                extracted = 0
+                for item in members:
+                    raw_name = item.filename.replace("\\", "/")
+                    if prefix and not raw_name.startswith(prefix + "/"):
+                        continue
+                    relative = raw_name[len(prefix) + 1:] if prefix else raw_name
+                    pure = PurePosixPath(relative)
+                    if pure.is_absolute() or ".." in pure.parts or not pure.parts:
+                        continue
+                    # ZIP symbolic links are not extracted.
+                    if (item.external_attr >> 16) & 0o170000 == 0o120000:
+                        continue
+                    target = (target_root / Path(*pure.parts)).resolve()
+                    if target != target_root and target_root not in target.parents:
+                        raise ValueError("Архив содержит путь за пределами папки карты.")
+                    if item.is_dir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(item, "r") as source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                    extracted += 1
+                    if extracted > 100000:
+                        raise ValueError("В архиве слишком много файлов.")
+            self._refresh_mod_list()
+            self._notify("Карта добавлена", f"Мир «{world_name}» установлен в сохранения сборки.", "success")
+        except Exception as exc:
+            log.exception("Map import failed")
+            self._notify("Не удалось импортировать карту", str(exc), "error", 7500)
 
     def _modpack_progress(self, value: int, message: str):
         self.mod_status_label.setText(message)
@@ -1810,62 +2501,70 @@ class LauncherWindow(QMainWindow):
                 loader=metadata["loader"], loader_version=metadata["loader_version"],
                 installed_version_id=metadata["installed_version_id"], storage_root="shared", kind="modpack",
             )
+        if self._pending_modpack_download:
+            Path(self._pending_modpack_download).unlink(missing_ok=True)
+            self._pending_modpack_download = ""
         self._refresh_profiles()
+        self._refresh_profile_setup_controls()
         self._refresh_installed_versions()
         if profile_id == self.active_profile_id:
             self._refresh_mod_list()
         self.mod_status_label.setText(f"Сборка «{metadata['name']}» готова к запуску.")
-        self._notify("Сборка импортирована",
+        self._notify("Сборка установлена",
                      f"{metadata['name']} · Minecraft {metadata['minecraft_version']} · {metadata['loader']}",
                      "success", 6500)
 
     def _modpack_import_failed(self, message: str):
+        if self._pending_modpack_download:
+            Path(self._pending_modpack_download).unlink(missing_ok=True)
+            self._pending_modpack_download = ""
         self.mod_status_label.setText(message)
         self._notify("Импорт сборки не завершён", message, "error", 8500)
 
     def rename_profile(self):
+        if not self._has_active_profile():
+            return
         profile = self._active_profile()
         new_name, accepted = QInputDialog.getText(
-            self, "Переименовать профиль", "Новое название профиля:",
+            self, "Переименовать сборку", "Новое название сборки:",
             QLineEdit.Normal, profile.get("name", ""),
         )
         if not accepted:
             return
         new_name = " ".join(new_name.split()).strip()
         if not new_name:
-            self._notify("Название не изменено", "Название профиля не может быть пустым.", "warning")
+            self._notify("Название не изменено", "Название сборки не может быть пустым.", "warning")
             return
         if any(item["id"] != profile["id"] and item["name"].casefold() == new_name.casefold()
                for item in self.profile_manager.all()):
-            self._notify("Название занято", "Профиль с таким названием уже существует.", "warning")
+            self._notify("Название занято", "Сборка с таким названием уже существует.", "warning")
             return
         try:
             self.profile_manager.update(profile["id"], name=new_name[:48])
             self._refresh_profiles()
-            self._notify("Профиль переименован", new_name[:48], "success")
+            self._notify("Сборка переименована", new_name[:48], "success")
         except Exception as exc:
-            self._notify("Не удалось переименовать профиль", str(exc), "error")
+            self._notify("Не удалось переименовать сборку", str(exc), "error")
 
     def delete_profile(self):
-        if len(self.profile_manager.all()) <= 1:
-            self._notify("Игровые профили", "Нельзя удалить последний профиль.", "warning")
+        if not self._has_active_profile():
             return
         profile = self._active_profile()
         from PyQt5.QtWidgets import QDialog, QDialogButtonBox
         dialog = QDialog(self)
-        dialog.setWindowTitle("Удалить игровой профиль")
+        dialog.setWindowTitle("Удалить сборку")
         dialog.setModal(True)
         dialog.setMinimumWidth(390)
         box = QVBoxLayout(dialog)
-        title = QLabel(f"Удалить профиль «{profile['name']}»?")
+        title = QLabel(f"Удалить сборку «{profile['name']}»?")
         title.setStyleSheet("font-size: 14pt; font-weight: 800;")
-        body = QLabel("Профиль будет удалён из списка. Его моды, миры и файлы останутся на диске.")
+        body = QLabel("Сборка будет удалена из списка. Её моды, миры и файлы останутся на диске.")
         body.setWordWrap(True)
         body.setObjectName("Muted")
         box.addWidget(title)
         box.addWidget(body)
         buttons = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
-        buttons.button(QDialogButtonBox.Yes).setText("Удалить профиль")
+        buttons.button(QDialogButtonBox.Yes).setText("Удалить сборку")
         buttons.button(QDialogButtonBox.No).setText("Отмена")
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -1875,16 +2574,23 @@ class LauncherWindow(QMainWindow):
             return
         try:
             old_id = self.active_profile_id
+            profiles_before = self.profile_manager.all()
             self.profile_manager.delete(old_id, delete_files=False)
-            self.active_profile_id = self.profile_manager.all()[0]["id"]
+            remaining = [item for item in profiles_before if item["id"] != old_id]
+            self.active_profile_id = remaining[0]["id"] if remaining else ""
             self.settings.setValue("profiles/active", self.active_profile_id)
             self.settings.sync()
             self._refresh_profiles()
-            self._refresh_installed_versions()
+            self._refresh_profile_setup_controls()
+            self._refresh_mod_list()
+            self._notify("Сборка удалена из списка", "Файлы сохранены на диске.", "success")
         except ProfileError as exc:
-            self._notify("Не удалось удалить профиль", str(exc), "error")
+            self._notify("Не удалось удалить сборку", str(exc), "error")
 
     def open_profile_folder(self):
+        if not self._has_active_profile():
+            self._notify("Сборка не выбрана", "Сначала создай профиль сборки.", "info")
+            return
         self._open_folder(self._instance_dir())
 
     def _open_folder(self, path: Path):
@@ -2053,24 +2759,13 @@ class LauncherWindow(QMainWindow):
         blocked = self.maintenance_mode or self.minimum_version_block
         self.install_button.setEnabled(not blocked and not (self.install_worker and self.install_worker.isRunning()))
         self.play_button.setEnabled(not blocked and not (self.launch_worker and self.launch_worker.isRunning()))
+        if hasattr(self, "install_profile_button"):
+            self.install_profile_button.setEnabled(
+                not blocked and self._has_active_profile()
+                and not (self.install_worker and self.install_worker.isRunning())
+            )
         if self.versions:
             self._populate_version_combo()
-        allowed_loaders = self.remote_versions_config.get("supported_loaders", [])
-        if isinstance(allowed_loaders, list) and allowed_loaders:
-            allowed_loader_set = {str(item).lower() for item in allowed_loaders}
-            loader_items = [("Vanilla", "vanilla"), ("Fabric", "fabric"), ("Forge", "forge"),
-                            ("NeoForge", "neoforge"), ("Quilt", "quilt")]
-            selected_loader = self.loader_combo.currentData()
-            self.loader_combo.clear()
-            for label, value in loader_items:
-                if value in allowed_loader_set:
-                    self.loader_combo.addItem(label, value)
-            selected_pos = self.loader_combo.findData(selected_loader)
-            if selected_pos < 0:
-                recommended = str(self.remote_launcher_config.get("recommended_loader", ""))
-                selected_pos = self.loader_combo.findData(recommended)
-            if selected_pos >= 0:
-                self.loader_combo.setCurrentIndex(selected_pos)
         ui_config = launcher_data.get("ui", {}) if isinstance(launcher_data, dict) else {}
         banner_url = str(ui_config.get("banner_url", "")) if isinstance(ui_config, dict) else ""
         self._load_promo_banner(banner_url.strip())
@@ -2151,14 +2846,21 @@ class LauncherWindow(QMainWindow):
         log.warning("Static content: %s", message)
 
     # -------------------------- Logs / close --------------------------
+    def _game_logs_directory(self) -> Path:
+        # Обычная игра пишет логи в корень .minecraft, сборка — в свою папку.
+        return self._instance_dir() if self._has_active_profile() else self.game_root
+
+    def open_game_logs_folder(self):
+        self._open_folder(self._game_logs_directory() / "logs")
+
     def _refresh_logs(self):
         if not hasattr(self, "log_view") or self.stack.currentIndex() != 4:
             return
         launcher_path = log_file()
-        game_path = self._instance_dir() / "logs" / "latest.log"
+        game_path = self._game_logs_directory() / "logs" / "latest.log"
         for path, viewer, empty_text in (
                 (launcher_path, self.log_view, "Лог лаунчера пока пуст."),
-                (game_path, self.game_log_view, "Minecraft ещё не создавал latest.log в этом профиле."),
+                (game_path, self.game_log_view, "Minecraft ещё не создавал latest.log в этой папке игры."),
         ):
             try:
                 with path.open("rb") as handle:
@@ -2188,6 +2890,7 @@ class LauncherWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self._allow_update_close:
+            self.discord_presence.shutdown()
             event.accept()
             return
         if self.stack.currentIndex() == getattr(self, "settings_page_index", 3) and self._settings_dirty:
@@ -2225,4 +2928,5 @@ class LauncherWindow(QMainWindow):
             )
             event.ignore()
             return
+        self.discord_presence.shutdown()
         event.accept()

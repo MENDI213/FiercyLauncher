@@ -125,39 +125,162 @@ def _download_verified(url: str, destination: Path, hashes: dict | None = None,
 
 
 class ModrinthSearchWorker(QThread):
-    loaded = pyqtSignal(list)
+    """Постраничный каталог проектов Modrinth; пустой запрос = популярные проекты."""
+    loaded = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, query: str, game_version: str, loader: str, parent=None):
+    def __init__(self, query: str = "", game_version: str = "", loader: str = "",
+                 project_type: str = "mod", sort: str = "downloads", offset: int = 0,
+                 limit: int = 48, parent=None):
         super().__init__(parent)
         self.query = query.strip()
         self.game_version = game_version.strip()
         self.loader = loader.strip().lower()
+        self.project_type = project_type.strip().lower()
+        self.sort = sort if sort in {"relevance", "downloads", "follows", "newest", "updated"} else "downloads"
+        self.offset = max(0, int(offset))
+        self.limit = max(1, min(100, int(limit)))
 
     def run(self):
         try:
-            facets = [["project_type:mod"]]
+            supported_types = {"mod", "resourcepack", "shader", "modpack"}
+            if self.project_type not in supported_types:
+                raise ValueError("Неизвестный тип контента Modrinth.")
+            facets = [[f"project_type:{self.project_type}"]]
             if self.game_version:
                 facets.append([f"versions:{self.game_version}"])
-            if self.loader and self.loader != "vanilla":
+            # Для модов ограничиваем выдачу одновременно версией Minecraft и
+            # загрузчиком активной сборки. Modrinth индексирует loader как category.
+            if self.project_type == "mod" and self.loader in {"fabric", "forge", "neoforge", "quilt"}:
                 facets.append([f"categories:{self.loader}"])
+            params = {
+                "facets": json.dumps(facets),
+                "limit": self.limit,
+                "offset": self.offset,
+                "index": self.sort,
+            }
+            if self.query:
+                params["query"] = self.query
             response = requests.get(
-                f"{MODRINTH_API}/search",
-                params={"query": self.query, "facets": json.dumps(facets), "limit": 30,
-                        "index": "downloads"},
+                f"{MODRINTH_API}/search", params=params,
                 timeout=(8, 25), headers={"User-Agent": USER_AGENT},
             )
             response.raise_for_status()
-            hits = response.json().get("hits", [])
-            results = [{"project_id": str(item.get("project_id", "")),
-                        "title": str(item.get("title", "Без названия")),
-                        "description": str(item.get("description", ""))[:240],
-                        "downloads": int(item.get("downloads", 0) or 0),
-                        "slug": str(item.get("slug", ""))} for item in hits]
-            self.loaded.emit(results)
+            data = response.json()
+            hits = data.get("hits", []) if isinstance(data, dict) else []
+            results = []
+            for item in hits:
+                project_id = str(item.get("project_id", "")).strip()
+                if not project_id:
+                    continue
+                results.append({
+                    "project_id": project_id,
+                    "title": str(item.get("title", "Без названия")),
+                    "description": str(item.get("description", ""))[:500],
+                    "downloads": int(item.get("downloads", 0) or 0),
+                    "follows": int(item.get("follows", 0) or 0),
+                    "author": str(item.get("author", "")),
+                    "icon_url": str(item.get("icon_url", "") or ""),
+                    "categories": list(item.get("display_categories", []) or item.get("categories", [])),
+                    "slug": str(item.get("slug", "")),
+                    "project_type": self.project_type,
+                    "versions": list(item.get("versions", []) or []),
+                    "date_modified": str(item.get("date_modified", "") or ""),
+                })
+            total_hits = int(data.get("total_hits", len(results)) or len(results)) if isinstance(data, dict) else len(results)
+            self.loaded.emit({
+                "results": results,
+                "total_hits": total_hits,
+                "offset": self.offset,
+                "limit": self.limit,
+            })
         except Exception as exc:
             log.exception("Modrinth search failed")
-            self.failed.emit(f"Modrinth не смог выполнить поиск: {exc}")
+            self.failed.emit(f"Modrinth не смог загрузить каталог: {exc}")
+
+
+class ModrinthProjectDetailsWorker(QThread):
+    """Загружает полную карточку проекта, галерею и совместимые версии."""
+    loaded = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, project_id: str, game_version: str = "", loader: str = "",
+                 project_type: str = "mod", parent=None):
+        super().__init__(parent)
+        self.project_id = str(project_id).strip()
+        self.game_version = str(game_version).strip()
+        self.loader = str(loader).strip().lower()
+        self.project_type = str(project_type).strip().lower()
+
+    def run(self):
+        try:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{2,64}", self.project_id):
+                raise ValueError("Некорректный ID проекта Modrinth.")
+            headers = {"User-Agent": USER_AGENT}
+            response = requests.get(f"{MODRINTH_API}/project/{self.project_id}",
+                                    timeout=(8, 25), headers=headers)
+            response.raise_for_status()
+            project = response.json()
+            params = {}
+            if self.game_version:
+                params["game_versions"] = json.dumps([self.game_version])
+            if self.project_type == "mod" and self.loader and self.loader != "vanilla":
+                params["loaders"] = json.dumps([self.loader])
+            versions_response = requests.get(
+                f"{MODRINTH_API}/project/{self.project_id}/version", params=params,
+                timeout=(8, 25), headers=headers,
+            )
+            versions_response.raise_for_status()
+            versions = versions_response.json()
+            if not isinstance(versions, list):
+                versions = []
+            self.loaded.emit({"project": project, "versions": versions})
+        except Exception as exc:
+            log.exception("Modrinth project details failed")
+            self.failed.emit(f"Не удалось открыть страницу проекта Modrinth: {exc}")
+
+
+class ModrinthImageWorker(QThread):
+    """Загружает только изображения с CDN Modrinth для карточек и галереи."""
+    loaded = pyqtSignal(bytes)
+    failed = pyqtSignal(str)
+
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self.url = str(url).strip()
+
+    @staticmethod
+    def _allowed_host(host: str) -> bool:
+        host = (host or "").lower().rstrip(".")
+        return host == "modrinth.com" or host.endswith(".modrinth.com")
+
+    def run(self):
+        try:
+            parsed = urlsplit(self.url)
+            if parsed.scheme != "https" or not self._allowed_host(parsed.hostname or ""):
+                raise ValueError("Изображение должно находиться на HTTPS-CDN Modrinth.")
+            with requests.get(self.url, stream=True, timeout=(5, 20),
+                              headers={"User-Agent": USER_AGENT}) as response:
+                response.raise_for_status()
+                final_url = urlsplit(str(response.url))
+                if final_url.scheme != "https" or not self._allowed_host(final_url.hostname or ""):
+                    raise ValueError("Ссылка изображения перенаправила на посторонний домен.")
+                if not response.headers.get("Content-Type", "").lower().startswith("image/"):
+                    raise ValueError("Modrinth вернул не изображение.")
+                length = int(response.headers.get("Content-Length", "0") or 0)
+                if length > 8 * 1024 * 1024:
+                    raise ValueError("Изображение превышает 8 МБ.")
+                payload = bytearray()
+                for chunk in response.iter_content(64 * 1024):
+                    if chunk:
+                        payload.extend(chunk)
+                        if len(payload) > 8 * 1024 * 1024:
+                            raise ValueError("Изображение превышает 8 МБ.")
+                if not payload:
+                    raise ValueError("Изображение пустое.")
+                self.loaded.emit(bytes(payload))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class ModrinthInstallWorker(QThread):
@@ -166,37 +289,39 @@ class ModrinthInstallWorker(QThread):
     progress = pyqtSignal(str)
 
     def __init__(self, project_id: str, game_version: str, loader: str,
-                 instance_dir: str, parent=None):
+                 instance_dir: str, project_type: str = "mod", version_id: str = "", parent=None):
         super().__init__(parent)
-        self.project_id = project_id
-        self.game_version = game_version
-        self.loader = loader
+        self.project_id = str(project_id).strip()
+        self.game_version = str(game_version).strip()
+        self.loader = str(loader).strip().lower()
         self.instance_dir = Path(instance_dir)
+        self.project_type = str(project_type or "mod").strip().lower()
+        self.version_id = str(version_id or "").strip()
 
     def _request_version(self, dependency: dict) -> dict:
         version_id = str(dependency.get("version_id") or "").strip()
         project_id = str(dependency.get("project_id") or "").strip()
+        headers = {"User-Agent": USER_AGENT}
         if version_id:
             response = requests.get(
-                f"{MODRINTH_API}/version/{version_id}", timeout=(8, 25),
-                headers={"User-Agent": USER_AGENT},
+                f"{MODRINTH_API}/version/{version_id}", timeout=(8, 25), headers=headers,
             )
             response.raise_for_status()
             version = response.json()
-            if self.game_version not in version.get("game_versions", []):
-                raise RuntimeError("Обязательная зависимость мода не поддерживает выбранную версию Minecraft.")
+            if self.game_version and self.game_version not in version.get("game_versions", []):
+                raise RuntimeError("Выбранная версия или обязательная зависимость не поддерживает Minecraft этой сборки.")
             loaders = [str(item).lower() for item in version.get("loaders", [])]
-            if self.loader and self.loader != "vanilla" and loaders and self.loader not in loaders:
-                raise RuntimeError("Обязательная зависимость мода не поддерживает выбранный загрузчик.")
+            if self.project_type == "mod" and self.loader and self.loader != "vanilla" and loaders and self.loader not in loaders:
+                raise RuntimeError("Выбранная версия или обязательная зависимость не поддерживает загрузчик этой сборки.")
             return version
         if not project_id:
             raise RuntimeError("Modrinth указал обязательную зависимость без project_id/version_id.")
-        params = {"game_versions": json.dumps([self.game_version])}
-        if self.loader and self.loader != "vanilla":
+        params = {"game_versions": json.dumps([self.game_version])} if self.game_version else {}
+        if self.project_type == "mod" and self.loader and self.loader != "vanilla":
             params["loaders"] = json.dumps([self.loader])
         response = requests.get(
             f"{MODRINTH_API}/project/{project_id}/version", params=params,
-            timeout=(8, 25), headers={"User-Agent": USER_AGENT},
+            timeout=(8, 25), headers=headers,
         )
         response.raise_for_status()
         versions = response.json()
@@ -204,42 +329,73 @@ class ModrinthInstallWorker(QThread):
             raise RuntimeError(f"Не найдена обязательная зависимость Modrinth: {project_id}.")
         return next((item for item in versions if item.get("version_type") == "release"), versions[0])
 
+    def _install_single_file(self, version: dict) -> list[str]:
+        files = [f for f in version.get("files", []) if isinstance(f, dict) and f.get("url")]
+        if not files:
+            raise RuntimeError("У выбранной версии Modrinth нет файлов для установки.")
+        primary = next((f for f in files if f.get("primary")), files[0])
+        filename = _safe_filename(primary.get("filename", "download"))
+        if self.project_type == "mod":
+            if not filename.lower().endswith(".jar"):
+                primary = next((f for f in files if str(f.get("filename", "")).lower().endswith(".jar")), None)
+                if not primary:
+                    raise RuntimeError("У выбранной версии мода нет JAR-файла.")
+                filename = _safe_filename(primary.get("filename", "mod.jar"))
+            target_dir = mods_directory(self.instance_dir)
+        elif self.project_type == "resourcepack":
+            target_dir = self.instance_dir / "resourcepacks"
+        elif self.project_type == "shader":
+            target_dir = self.instance_dir / "shaderpacks"
+        elif self.project_type == "modpack":
+            target_dir = self.instance_dir / ".fiercy-downloads"
+            if not filename.lower().endswith(".mrpack"):
+                raise RuntimeError("Modrinth-сборка должна быть файлом .mrpack.")
+        else:
+            raise RuntimeError("Этот тип проекта пока не поддерживается для установки.")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / filename
+        if target.exists():
+            target = target_dir / f"{target.stem}-{str(version.get('id', 'version'))[:8]}{target.suffix}"
+        self.progress.emit(f"Скачивание {filename}…")
+        saved = _download_verified(primary["url"], target, primary.get("hashes", {}),
+                                   max_size=1024 * 1024 * 1024)
+        return [str(saved)]
+
     def run(self):
         try:
-            queue = [{"project_id": self.project_id}]
-            seen: set[str] = set()
-            installed: list[str] = []
-            while queue:
-                if len(seen) >= 32:
-                    raise RuntimeError("У мода слишком много обязательных зависимостей (лимит 32).")
-                dependency = queue.pop(0)
-                identity = str(dependency.get("version_id") or dependency.get("project_id") or "").strip()
-                if not identity or identity in seen:
-                    continue
-                seen.add(identity)
-                version = self._request_version(dependency)
-                version_id = str(version.get("id", ""))
-                if version_id:
-                    seen.add(version_id)
-                files = [f for f in version.get("files", [])
-                         if isinstance(f, dict) and f.get("url") and str(f.get("filename", "")).lower().endswith(".jar")]
-                if not files:
-                    raise RuntimeError(f"У Modrinth-версии {version.get('name', identity)} нет JAR-файла.")
-                primary = next((f for f in files if f.get("primary")), files[0])
-                filename = _safe_filename(primary.get("filename", "mod.jar"))
-                target = mods_directory(self.instance_dir) / filename
-                self.progress.emit(f"Скачивание {filename}…")
-                saved = _download_verified(primary["url"], target, primary.get("hashes", {}))
-                installed.append(str(saved))
-                for child in version.get("dependencies", []):
-                    if not isinstance(child, dict) or child.get("dependency_type") != "required":
+            if self.project_type not in {"mod", "resourcepack", "shader", "modpack"}:
+                raise RuntimeError("Неподдерживаемый тип проекта Modrinth.")
+            if self.project_type == "mod":
+                queue = [{"version_id": self.version_id}] if self.version_id else [{"project_id": self.project_id}]
+                seen: set[str] = set()
+                installed: list[str] = []
+                while queue:
+                    if len(seen) >= 32:
+                        raise RuntimeError("У мода слишком много обязательных зависимостей (лимит 32).")
+                    dependency = queue.pop(0)
+                    identity = str(dependency.get("version_id") or dependency.get("project_id") or "").strip()
+                    if not identity or identity in seen:
                         continue
-                    child_id = str(child.get("version_id") or child.get("project_id") or "").strip()
-                    if child_id and child_id not in seen:
-                        queue.append(child)
-            if not installed:
-                raise RuntimeError("Modrinth не вернул ни одного JAR-файла.")
-            self.completed.emit(installed)
+                    seen.add(identity)
+                    version = self._request_version(dependency)
+                    version_id = str(version.get("id", ""))
+                    if version_id:
+                        seen.add(version_id)
+                    installed.extend(self._install_single_file(version))
+                    for child in version.get("dependencies", []):
+                        if not isinstance(child, dict) or child.get("dependency_type") != "required":
+                            continue
+                        child_id = str(child.get("version_id") or child.get("project_id") or "").strip()
+                        if child_id and child_id not in seen:
+                            queue.append(child)
+                if not installed:
+                    raise RuntimeError("Modrinth не вернул ни одного JAR-файла.")
+                self.completed.emit(installed)
+            else:
+                version = self._request_version({"version_id": self.version_id} if self.version_id else
+                                                {"project_id": self.project_id})
+                installed = self._install_single_file(version)
+                self.completed.emit(installed)
         except Exception as exc:
             log.exception("Modrinth install failed")
             self.failed.emit(str(exc))

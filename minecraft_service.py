@@ -16,6 +16,7 @@ import subprocess
 import platform
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import requests
@@ -339,11 +340,62 @@ class VersionListWorker(QThread):
     def run(self) -> None:
         try:
             versions = mll.utils.get_version_list()
-            releases = [dict(item) for item in versions if item.get("type") == "release"]
-            self.loaded.emit(releases)
+            # Показываем все официальные типы Minecraft: релизы, снапшоты,
+            # старые Beta и Alpha. Это список для обычной игры; доступность
+            # конкретного загрузчика отдельно проверяется его API.
+            supported_types = {"release", "snapshot", "old_beta", "old_alpha"}
+            available = [dict(item) for item in versions if item.get("type") in supported_types]
+            self.loaded.emit(available)
         except Exception as exc:
             log.exception("Не удалось загрузить список версий Minecraft")
             self.failed.emit(f"Не удалось получить список официальных версий. Проверь интернет.\n{exc}")
+
+
+class LoaderVersionListWorker(QThread):
+    """Получает официальные стабильные версии Forge/NeoForge/Fabric/Quilt."""
+    loaded = pyqtSignal(str, str, list)
+    failed = pyqtSignal(str, str, str)
+
+    def __init__(self, loader_id: str, minecraft_version: str, parent=None):
+        super().__init__(parent)
+        self.loader_id = str(loader_id).strip().lower()
+        self.minecraft_version = str(minecraft_version).strip()
+
+    def run(self):
+        try:
+            if self.loader_id == "vanilla":
+                self.loaded.emit(self.loader_id, self.minecraft_version, [])
+                return
+            if self.loader_id == "neoforge":
+                # minecraft-launcher-lib не во всех выпусках 8.x корректно
+                # получает NeoForge. Берём список напрямую из официального Maven.
+                match = re.fullmatch(r"1\.(\d+)(?:\.(\d+))?", self.minecraft_version)
+                if not match:
+                    raise RuntimeError(f"Неизвестный формат версии Minecraft: {self.minecraft_version}")
+                mc_prefix = f"{match.group(1)}.{match.group(2) or '0'}"
+                metadata = requests.get(
+                    "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
+                    timeout=(8, 25), headers={"User-Agent": LAUNCHER_NAME},
+                )
+                metadata.raise_for_status()
+                root = ET.fromstring(metadata.content)
+                cleaned = [node.text.strip() for node in root.findall(".//version")
+                           if node.text and node.text.strip().startswith(mc_prefix + ".")
+                           and "-" not in node.text]
+                from packaging.version import Version
+                cleaned.sort(key=Version, reverse=True)
+            else:
+                loader = mll.mod_loader.get_mod_loader(self.loader_id)
+                try:
+                    versions = loader.get_loader_versions(self.minecraft_version, True)
+                except TypeError:
+                    versions = loader.get_loader_versions(self.minecraft_version)
+                cleaned = [str(version) for version in (versions or []) if str(version).strip()]
+            self.loaded.emit(self.loader_id, self.minecraft_version, cleaned)
+        except Exception as exc:
+            log.exception("Не удалось загрузить версии загрузчика %s для Minecraft %s",
+                          self.loader_id, self.minecraft_version)
+            self.failed.emit(self.loader_id, self.minecraft_version, str(exc))
 
 
 class InstallMinecraftWorker(QThread):
@@ -387,14 +439,72 @@ class InstallMinecraftWorker(QThread):
                     if self.loader not in supported:
                         raise RuntimeError(f"Неизвестный загрузчик: {self.loader}")
                     self.progress.emit(-1, f"Установка {self.loader.title()}…")
-                    loader = mll.mod_loader.get_mod_loader(self.loader)
-                    installed_id = loader.install(
-                        self.minecraft_version,
-                        str(self.game_root),
-                        loader_version=self.loader_version or None,
-                        callback=callback,
-                        java=java,
-                    )
+                    if self.loader == "neoforge":
+                        # Надёжный официальный путь установки NeoForge: installer JAR
+                        # из Maven запускается той же Java, что выбрана для Minecraft.
+                        from urllib.parse import quote
+                        neoforge_version = self.loader_version
+                        if not neoforge_version:
+                            version_worker = requests.get(
+                                "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
+                                timeout=(8, 25), headers={"User-Agent": LAUNCHER_NAME},
+                            )
+                            version_worker.raise_for_status()
+                            metadata_root = ET.fromstring(version_worker.content)
+                            mc_match = re.fullmatch(r"1\.(\d+)(?:\.(\d+))?", self.minecraft_version)
+                            if not mc_match:
+                                raise RuntimeError("Не удалось определить совместимую версию NeoForge.")
+                            prefix = f"{mc_match.group(1)}.{mc_match.group(2) or '0'}."
+                            from packaging.version import Version
+                            candidates = [n.text.strip() for n in metadata_root.findall(".//version")
+                                          if n.text and n.text.strip().startswith(prefix) and "-" not in n.text]
+                            candidates.sort(key=Version, reverse=True)
+                            if not candidates:
+                                raise RuntimeError(f"Для Minecraft {self.minecraft_version} нет релиза NeoForge.")
+                            neoforge_version = candidates[0]
+                        installer_dir = self.game_root / ".fiercy" / "installers"
+                        installer_dir.mkdir(parents=True, exist_ok=True)
+                        installer = installer_dir / f"neoforge-{neoforge_version}-installer.jar"
+                        if not installer.is_file():
+                            installer_url = ("https://maven.neoforged.net/releases/net/neoforged/neoforge/"
+                                             f"{quote(neoforge_version)}/neoforge-{quote(neoforge_version)}-installer.jar")
+                            self.progress.emit(-1, f"Скачиваем NeoForge {neoforge_version}…")
+                            with requests.get(installer_url, stream=True, timeout=(10, 90),
+                                              headers={"User-Agent": LAUNCHER_NAME}) as response:
+                                response.raise_for_status()
+                                with installer.open("wb") as output:
+                                    for chunk in response.iter_content(1024 * 256):
+                                        if chunk:
+                                            output.write(chunk)
+                        self.progress.emit(-1, f"Устанавливаем NeoForge {neoforge_version}…")
+                        installer_java = java
+                        if Path(java).name.lower() == "javaw.exe":
+                            console_java = Path(java).with_name("java.exe")
+                            if console_java.is_file():
+                                installer_java = str(console_java)
+                        completed = subprocess.run(
+                            [installer_java, "-Djava.awt.headless=true", "-jar", str(installer),
+                             "--installClient", str(self.game_root)],
+                            capture_output=True, text=True, timeout=900,
+                        )
+                        if completed.returncode != 0:
+                            details = (completed.stderr or completed.stdout or "")[-3500:]
+                            raise RuntimeError("Установщик NeoForge завершился с ошибкой.\n" + details)
+                        installed_id = f"neoforge-{neoforge_version}"
+                        if not (self.game_root / "versions" / installed_id / f"{installed_id}.json").is_file():
+                            # Некоторые installer-релизы записывают profile id с другим префиксом.
+                            candidates = [folder.name for folder in (self.game_root / "versions").iterdir()
+                                          if folder.is_dir() and folder.name.lower().startswith("neoforge")
+                                          and (folder / f"{folder.name}.json").is_file()]
+                            if not candidates:
+                                raise RuntimeError("NeoForge installer завершился, но JSON установленной версии не найден.")
+                            installed_id = max(candidates, key=lambda name: (self.game_root / "versions" / name).stat().st_mtime)
+                    else:
+                        loader = mll.mod_loader.get_mod_loader(self.loader)
+                        installed_id = loader.install(
+                            self.minecraft_version, str(self.game_root),
+                            loader_version=self.loader_version or None, callback=callback, java=java,
+                        )
                     java = resolve_java(str(installed_id), self.game_root, self.java_path,
                                         self.auto_java, callback=callback)
 
@@ -450,6 +560,7 @@ class InstallMinecraftWorker(QThread):
 
 class LaunchWorker(QThread):
     started_game = pyqtSignal(str)
+    game_process_started = pyqtSignal(int)
     failed = pyqtSignal(str)
     progress = pyqtSignal(str)
 
@@ -521,7 +632,7 @@ class LaunchWorker(QThread):
                 raise RuntimeError("Java executable не найден. Проверь путь в настройках.")
 
             creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
-            subprocess.Popen(
+            game_process = subprocess.Popen(
                 command,
                 cwd=str(self.instance_dir),
                 creationflags=creation_flags,
@@ -530,8 +641,9 @@ class LaunchWorker(QThread):
                 stderr=subprocess.STDOUT,
                 close_fds=(os.name != "nt"),
             )
-            log.info("Minecraft стартовал: version=%s sharedRoot=%s gameDir=%s java=%s ram=%sG",
-                     self.version_id, self.game_root, self.instance_dir, java, ram)
+            log.info("Minecraft стартовал: pid=%s version=%s sharedRoot=%s gameDir=%s java=%s ram=%sG",
+                     game_process.pid, self.version_id, self.game_root, self.instance_dir, java, ram)
+            self.game_process_started.emit(int(game_process.pid))
             self.started_game.emit(f"Minecraft запущен · версия {self.version_id}")
         except Exception as exc:
             log.exception("Ошибка запуска Minecraft")

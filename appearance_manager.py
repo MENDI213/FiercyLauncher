@@ -207,10 +207,14 @@ QToolButton#CloseControl:hover {{ background: {p['danger']}; color: #FFFFFF; }}
 #SecondaryButton:hover {{ background: {p['accent']}; color: {p['button_text']}; border-color: {p['accent2']}; }}
 #DangerButton {{ color: {p['danger']}; background: {p['panel_alt']}; border: 1px solid {p['danger']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
 #DangerButton:hover {{ color: #FFFFFF; background: {p['danger']}; }}
-QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: {r_control}px; color: {p['text']}; padding: {pad-2}px {pad}px; selection-background-color: {p['selection']}; min-height: {round(24*scale)}px; }}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {{ border: 2px solid {p['accent']}; }}
-QComboBox::drop-down {{ border: 0; width: 30px; }}
-QComboBox QAbstractItemView {{ background: {p['panel']}; border: 1px solid {p['border']}; selection-background-color: {p['selection']}; color: {p['text']}; outline: 0; padding: 5px; }}
+QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: {r_control}px; color: {p['text']}; padding: {pad-2}px {pad}px; selection-background-color: {p['selection']}; min-height: {round(24*scale)}px; outline: 0; }}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {{ border: 1px solid {p['accent']}; outline: 0; }}
+QComboBox {{ combobox-popup: 0; padding-right: 32px; }}
+QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; border: 0; width: 30px; background: transparent; }}
+QComboBox::down-arrow {{ width: 7px; height: 7px; border-right: 2px solid {p['muted']}; border-bottom: 2px solid {p['muted']}; margin-right: 10px; margin-top: -3px; }}
+QComboBox QAbstractItemView {{ background: {p['panel']}; border: 0; outline: 0; selection-background-color: {p['selection']}; selection-color: {p['text']}; color: {p['text']}; padding: 4px; }}
+QComboBoxPrivateContainer {{ background: {p['panel']}; border: 0; padding: 0; margin: 0; }}
+QComboBoxPrivateContainer QFrame {{ border: 0; padding: 0; margin: 0; }}
 QCheckBox {{ spacing: 10px; color: {p['text']}; }}
 QCheckBox::indicator {{ width: 19px; height: 19px; border-radius: 6px; border: 1px solid {p['border']}; background: {p['input']}; }}
 QCheckBox::indicator:checked {{ background: {p['accent']}; border: 2px solid {p['accent2']}; }}
@@ -238,4 +242,40 @@ QToolButton#ToastClose {{ color: {p['muted']}; border: 0; background: transparen
 QPushButton#ColorButton {{ min-width: 100px; max-width: 100px; min-height: 30px; border-radius: 8px; border: 1px solid {p['border']}; }}
 QSlider::groove:horizontal {{ height: 7px; background: {p['panel_alt']}; border-radius: 3px; }}
 QSlider::handle:horizontal {{ width: 18px; margin: -6px 0; border-radius: 9px; background: {p['accent']}; border: 2px solid {p['accent2']}; }}
+/* Native popup frames and focus outlines used to appear white on some Windows styles. */
+QComboBox QAbstractItemView, QAbstractItemView, QListView, QTreeView {{
+    background: {p['panel']}; color: {p['text']}; border: 0; outline: 0;
+    selection-background-color: {p['selection']}; selection-color: {p['text']};
+}}
+QComboBoxPrivateContainer {{ background: {p['panel']}; border: 0; padding: 0; margin: 0; }}
+QComboBoxPrivateContainer QFrame {{ border: 0; padding: 0; margin: 0; }}
+QComboBox QAbstractItemView::item, QAbstractItemView::item, QListWidget::item {{
+    background: transparent; color: {p['text']}; border: 0; padding: 8px 10px; min-height: 24px;
+}}
+QComboBox QAbstractItemView::item:hover, QAbstractItemView::item:hover, QListWidget::item:hover {{
+    background: {p['panel_alt']}; color: {p['text']};
+}}
+QComboBox QAbstractItemView::item:selected, QAbstractItemView::item:selected, QListWidget::item:selected {{
+    background: {p['selection']}; color: {p['text']}; border: 0;
+}}
+QComboBox QAbstractItemView:focus, QListWidget:focus, QListView:focus, QTreeView:focus {{ outline: 0; }}
+QListWidget {{
+    background: {p['input']}; color: {p['text']}; border: 1px solid {p['border']};
+    border-radius: {r_control}px; outline: 0; padding: 5px; alternate-background-color: {p['panel_alt']};
+}}
+QListWidget#ModrinthResultsList {{ background: {p['window']}; border: 1px solid {p['border']}; padding: 8px; }}
+QFrame#ModrinthProjectCard {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QFrame#ModrinthProjectCard:hover {{ background: {p['panel_alt']}; border-color: {p['accent2']}; }}
+QLabel#ModrinthProjectIcon {{ background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: 12px; color: {p['accent2']}; font-size: 20pt; font-weight: 900; }}
+QLabel#ModrinthProjectTitle {{ color: {p['text']}; font-size: 11pt; font-weight: 800; }}
+QLabel#ModrinthProjectDescription {{ color: {p['muted']}; font-size: 9pt; }}
+QLabel#ModrinthProjectMeta {{ color: {p['muted']}; font-size: 8pt; }}
+QLabel#ModrinthProjectTags {{ color: {p['accent2']}; font-size: 8pt; font-weight: 700; }}
+QWidget#ModrinthCatalogContent {{ background: transparent; }}
+QScrollArea#ModrinthCatalogScroll {{ background: transparent; border: 0; }}
+QTabWidget#ProfileContentTabs::pane {{ border: 0; background: {p['panel']}; top: 0; }}
+QTabWidget#ProfileContentTabs QTabBar {{ background: transparent; border: 0; }}
+QTabWidget#ProfileContentTabs QTabBar::tab {{ background: {p['panel_alt']}; color: {p['muted']}; border: 1px solid {p['border']}; padding: 9px 16px; margin-right: 5px; border-top-left-radius: 9px; border-top-right-radius: 9px; }}
+QTabWidget#ProfileContentTabs QTabBar::tab:selected {{ background: {p['panel']}; color: {p['text']}; border-bottom-color: {p['panel']}; font-weight: 800; }}
+QLabel#ModrinthGalleryImage {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: 9px; color: {p['muted']}; }}
 """
