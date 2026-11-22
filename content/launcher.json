@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "launcher": {
+    "name": "FiercyLauncher",
+    "latest_version": "3.7.0",
+    "minimum_version": "3.7.0",
+    "maintenance_mode": false,
+    "announcement": "Добро пожаловать в FiercyLauncher!",
+    "recommended_minecraft_version": "1.21.1",
+    "recommended_loader": "neoforge"
+  },
+  "ui": {
+    "show_announcement": true,
+    "accent": "violet",
+    "banner_url": ""
+  }
+}

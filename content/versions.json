@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "recommended_minecraft_version": "1.21.1",
+  "supported_minecraft_versions": [],
+  "supported_loaders": ["vanilla", "fabric", "forge", "neoforge", "quilt"],
+  "loader_versions": {
+    "fabric": "latest-compatible",
+    "forge": "latest-compatible",
+    "neoforge": "latest-compatible",
+    "quilt": "latest-compatible"
+  }
+}
