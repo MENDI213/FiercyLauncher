@@ -115,3 +115,18 @@ QLabel#ModrinthProjectTags { color: #8269dc; font-size: 8pt; font-weight: 700; }
 QWidget#ModrinthCatalogContent { background: transparent; }
 QScrollArea#ModrinthCatalogScroll { background: transparent; border: 0; }
 QLabel#ModrinthGalleryImage { background: #edf1f8; border: 1px solid #d1dbea; border-radius: 9px; color: #6f7e96; }
+
+
+/* Modrinth catalog and project detail page */
+QPushButton#ModTypeFilter { color: #5e6a83; background: #f7f9fd; border: 1px solid #d1dbea; border-radius: 10px; padding: 10px 14px; font-weight: 800; }
+QPushButton#ModTypeFilter:hover { background: #edf1f8; border-color: #a89ae2; color: #1e2a3d; }
+QPushButton#ModTypeFilter:checked { color: #ffffff; background: #7658d9; border: 1px solid #9f8be8; }
+QFrame#ModrinthDetailsHeader, QFrame#ModrinthDetailsFooter { background: #ffffff; border: 1px solid #dce3ef; border-radius: 12px; }
+QScrollArea#ModrinthDetailsScroll, QScrollArea#ModrinthGalleryScroll { background: transparent; border: 0; }
+QTextBrowser#ModrinthProjectBody { background: #ffffff; color: #1e2a3d; border: 1px solid #dce3ef; border-radius: 10px; padding: 10px; selection-background-color: #7658d9; }
+QLabel#SectionTitle { color: #1e2a3d; font-size: 12pt; font-weight: 800; padding: 2px 0; }
+QListWidget#ProfileModsList { background: #ffffff; border: 1px solid #dce3ef; border-radius: 10px; padding: 5px; }
+QListWidget#ProfileModsList::item { border: 0; padding: 2px; }
+QListWidget#ProfileModsList::item:selected { background: #e9eef7; border-radius: 8px; }
+QPushButton#InstalledModTitle { color: #1e2a3d; font-weight: 700; }
+QPushButton#InstalledModTitle:hover { color: #7658d9; }

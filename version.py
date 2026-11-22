@@ -1,7 +1,7 @@
 """Единая версия приложения и ссылки на публичные данные GitHub."""
 
 LAUNCHER_NAME = "FiercyLauncher"
-LAUNCHER_VERSION = "3.7.5"
+LAUNCHER_VERSION = "3.7.4"
 GITHUB_REPOSITORY = "MENDI213/FiercyLauncher"
 GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/main"

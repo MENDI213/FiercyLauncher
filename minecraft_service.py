@@ -16,6 +16,7 @@ import subprocess
 import platform
 import tempfile
 import zipfile
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -62,6 +63,144 @@ def _callback(worker: QThread):
         current(state["current"])
 
     return {"setStatus": status, "setProgress": current, "setMax": maximum}
+
+
+def _download_neoforge_file(url: str, destination: Path, progress=None) -> Path:
+    """Downloads a NeoForge installer atomically, retries transient network errors.
+
+    The reported error in earlier logs was a TCP connect timeout, not an invalid
+    Maven path. Use a longer connect timeout, bounded retries, and atomic file
+    replacement so a failed transfer never leaves a partial JAR.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    last_error = None
+    headers = {"User-Agent": LAUNCHER_NAME, "Accept": "application/java-archive, */*"}
+    for attempt in range(3):
+        temporary.unlink(missing_ok=True)
+        try:
+            if progress:
+                progress(f"Скачиваем NeoForge: попытка {attempt + 1}/3…")
+            with requests.get(url, stream=True, timeout=(25, 180), headers=headers) as response:
+                response.raise_for_status()
+                content_type = str(response.headers.get("Content-Type", "")).lower()
+                if "text/html" in content_type:
+                    raise RuntimeError("Вместо установщика Maven вернул HTML-страницу.")
+                expected = int(response.headers.get("Content-Length", "0") or 0)
+                if expected and expected > 256 * 1024 * 1024:
+                    raise RuntimeError("Размер установщика NeoForge неожиданно велик.")
+                written = 0
+                with temporary.open("wb") as output:
+                    for chunk in response.iter_content(256 * 1024):
+                        if not chunk:
+                            continue
+                        written += len(chunk)
+                        if written > 256 * 1024 * 1024:
+                            raise RuntimeError("Установщик NeoForge превысил лимит 256 МБ.")
+                        output.write(chunk)
+                if written < 1024 or not zipfile.is_zipfile(temporary):
+                    raise RuntimeError("Скачанный установщик NeoForge повреждён или это не JAR-файл.")
+            temporary.replace(destination)
+            return destination
+        except (requests.RequestException, OSError, RuntimeError) as exc:
+            last_error = exc
+            temporary.unlink(missing_ok=True)
+            log.warning("NeoForge installer download attempt %s/3 failed: %s", attempt + 1, exc)
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))
+    if isinstance(last_error, requests.exceptions.ConnectTimeout):
+        raise RuntimeError(
+            "Соединение с официальным сервером NeoForge не устанавливается (ConnectTimeout). "
+            "Это не ошибка версии и не отсутствие файла: проверь доступ к maven.neoforged.net, "
+            "VPN/прокси, DNS и сетевой экран. Можно скачать JAR в браузере по официальной ссылке "
+            f"{url} и положить его в папку {destination}. Затем снова нажми «Установить / проверить». "
+            f"Последняя ошибка: {last_error}"
+        )
+    raise RuntimeError(
+        "Не удалось скачать установщик NeoForge с официального Maven после 3 попыток. "
+        "Проверь доступ к maven.neoforged.net, VPN/прокси и настройки антивируса. "
+        f"Официальная ссылка: {url}. Кэш установщика: {destination}. Последняя ошибка: {last_error}"
+    )
+
+
+def install_neoforge_client(minecraft_version: str, loader_version: str, game_root: str | Path,
+                            java_path: str, progress=None) -> str:
+    """Install official NeoForge client into the shared versions directory."""
+    game_root = Path(game_root).expanduser().resolve()
+    version = str(loader_version or "").strip()
+    metadata_url = "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
+    headers = {"User-Agent": LAUNCHER_NAME}
+    if not version:
+        match = re.fullmatch(r"1\.(\d+)(?:\.(\d+))?", str(minecraft_version).strip())
+        if not match:
+            raise RuntimeError("Не удалось определить совместимую версию NeoForge для этой версии Minecraft.")
+        prefix = f"{match.group(1)}.{match.group(2) or '0'}."
+        response = None
+        last_error = None
+        for attempt in range(4):
+            try:
+                response = requests.get(metadata_url, timeout=(35, 60), headers=headers)
+                response.raise_for_status()
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 3:
+                    time.sleep(2 ** (attempt + 1))
+        if response is None:
+            raise RuntimeError(f"Не удалось получить список версий NeoForge с официального Maven: {last_error}")
+        metadata_root = ET.fromstring(response.content)
+        candidates = [node.text.strip() for node in metadata_root.findall(".//version")
+                      if node.text and node.text.strip().startswith(prefix) and "-" not in node.text]
+        from packaging.version import Version
+        candidates.sort(key=Version, reverse=True)
+        if not candidates:
+            raise RuntimeError(f"Для Minecraft {minecraft_version} не найден стабильный NeoForge.")
+        version = candidates[0]
+
+    # Protect against accidentally selecting a loader build for another MC line.
+    mc_match = re.fullmatch(r"1\.(\d+)(?:\.(\d+))?", str(minecraft_version).strip())
+    loader_match = re.match(r"^(\d+)\.(\d+)\.", version)
+    if mc_match and loader_match:
+        expected_prefix = (mc_match.group(1), mc_match.group(2) or "0")
+        if loader_match.groups() != expected_prefix:
+            raise RuntimeError(f"NeoForge {version} не относится к Minecraft {minecraft_version}.")
+
+    installer_dir = game_root / ".fiercy" / "installers"
+    installer = installer_dir / f"neoforge-{version}-installer.jar"
+    if not installer.is_file() or not zipfile.is_zipfile(installer):
+        from urllib.parse import quote
+        url = ("https://maven.neoforged.net/releases/net/neoforged/neoforge/"
+               f"{quote(version)}/neoforge-{quote(version)}-installer.jar")
+        _download_neoforge_file(url, installer, progress)
+
+    if progress:
+        progress(f"Устанавливаем NeoForge {version}…")
+    installer_java = str(java_path)
+    if Path(installer_java).name.lower() == "javaw.exe":
+        console_java = Path(installer_java).with_name("java.exe")
+        if console_java.is_file():
+            installer_java = str(console_java)
+    completed = subprocess.run(
+        [installer_java, "-Djava.awt.headless=true", "-jar", str(installer),
+         "--installClient", str(game_root)],
+        capture_output=True, text=True, timeout=900,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+    )
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout or "")[-4500:]
+        raise RuntimeError("Установщик NeoForge завершился с ошибкой.\n" + details)
+
+    expected_id = f"neoforge-{version}"
+    expected_json = game_root / "versions" / expected_id / f"{expected_id}.json"
+    if expected_json.is_file():
+        return expected_id
+    versions_dir = game_root / "versions"
+    candidates = [folder for folder in versions_dir.iterdir()
+                  if folder.is_dir() and folder.name.lower().startswith("neoforge")
+                  and (folder / f"{folder.name}.json").is_file()] if versions_dir.is_dir() else []
+    if not candidates:
+        raise RuntimeError("NeoForge installer завершился, но JSON установленной версии не найден.")
+    return max(candidates, key=lambda folder: folder.stat().st_mtime).name
 
 
 def find_system_java() -> str:
@@ -440,65 +579,11 @@ class InstallMinecraftWorker(QThread):
                         raise RuntimeError(f"Неизвестный загрузчик: {self.loader}")
                     self.progress.emit(-1, f"Установка {self.loader.title()}…")
                     if self.loader == "neoforge":
-                        # Надёжный официальный путь установки NeoForge: installer JAR
-                        # из Maven запускается той же Java, что выбрана для Minecraft.
-                        from urllib.parse import quote
-                        neoforge_version = self.loader_version
-                        if not neoforge_version:
-                            version_worker = requests.get(
-                                "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
-                                timeout=(8, 25), headers={"User-Agent": LAUNCHER_NAME},
-                            )
-                            version_worker.raise_for_status()
-                            metadata_root = ET.fromstring(version_worker.content)
-                            mc_match = re.fullmatch(r"1\.(\d+)(?:\.(\d+))?", self.minecraft_version)
-                            if not mc_match:
-                                raise RuntimeError("Не удалось определить совместимую версию NeoForge.")
-                            prefix = f"{mc_match.group(1)}.{mc_match.group(2) or '0'}."
-                            from packaging.version import Version
-                            candidates = [n.text.strip() for n in metadata_root.findall(".//version")
-                                          if n.text and n.text.strip().startswith(prefix) and "-" not in n.text]
-                            candidates.sort(key=Version, reverse=True)
-                            if not candidates:
-                                raise RuntimeError(f"Для Minecraft {self.minecraft_version} нет релиза NeoForge.")
-                            neoforge_version = candidates[0]
-                        installer_dir = self.game_root / ".fiercy" / "installers"
-                        installer_dir.mkdir(parents=True, exist_ok=True)
-                        installer = installer_dir / f"neoforge-{neoforge_version}-installer.jar"
-                        if not installer.is_file():
-                            installer_url = ("https://maven.neoforged.net/releases/net/neoforged/neoforge/"
-                                             f"{quote(neoforge_version)}/neoforge-{quote(neoforge_version)}-installer.jar")
-                            self.progress.emit(-1, f"Скачиваем NeoForge {neoforge_version}…")
-                            with requests.get(installer_url, stream=True, timeout=(10, 90),
-                                              headers={"User-Agent": LAUNCHER_NAME}) as response:
-                                response.raise_for_status()
-                                with installer.open("wb") as output:
-                                    for chunk in response.iter_content(1024 * 256):
-                                        if chunk:
-                                            output.write(chunk)
-                        self.progress.emit(-1, f"Устанавливаем NeoForge {neoforge_version}…")
-                        installer_java = java
-                        if Path(java).name.lower() == "javaw.exe":
-                            console_java = Path(java).with_name("java.exe")
-                            if console_java.is_file():
-                                installer_java = str(console_java)
-                        completed = subprocess.run(
-                            [installer_java, "-Djava.awt.headless=true", "-jar", str(installer),
-                             "--installClient", str(self.game_root)],
-                            capture_output=True, text=True, timeout=900,
+                        def _neo_progress(message: str):
+                            self.progress.emit(-1, message)
+                        installed_id = install_neoforge_client(
+                            self.minecraft_version, self.loader_version, self.game_root, java, _neo_progress,
                         )
-                        if completed.returncode != 0:
-                            details = (completed.stderr or completed.stdout or "")[-3500:]
-                            raise RuntimeError("Установщик NeoForge завершился с ошибкой.\n" + details)
-                        installed_id = f"neoforge-{neoforge_version}"
-                        if not (self.game_root / "versions" / installed_id / f"{installed_id}.json").is_file():
-                            # Некоторые installer-релизы записывают profile id с другим префиксом.
-                            candidates = [folder.name for folder in (self.game_root / "versions").iterdir()
-                                          if folder.is_dir() and folder.name.lower().startswith("neoforge")
-                                          and (folder / f"{folder.name}.json").is_file()]
-                            if not candidates:
-                                raise RuntimeError("NeoForge installer завершился, но JSON установленной версии не найден.")
-                            installed_id = max(candidates, key=lambda name: (self.game_root / "versions" / name).stat().st_mtime)
                     else:
                         loader = mll.mod_loader.get_mod_loader(self.loader)
                         installed_id = loader.install(
@@ -536,8 +621,12 @@ class InstallMinecraftWorker(QThread):
                     import time
                     time.sleep(2) # Ждем и пробуем снова
                     continue
+                elif isinstance(exc, requests.exceptions.RequestException) and attempt < max_retries - 1:
+                    log.warning("Сетевая ошибка установки (попытка %s/%s): %s", attempt + 1, max_retries, exc)
+                    self.progress.emit(-1, f"Проблема сети. Повторяем установку ({attempt + 2}/{max_retries})…")
+                    time.sleep(2 ** (attempt + 1))
+                    continue
                 else:
-                    # Если это другая ошибка (нет сети, неизвестная версия), сразу выходим
                     log.exception("Ошибка установки Minecraft")
                     self.failed.emit(self._friendly_error(exc))
                     return

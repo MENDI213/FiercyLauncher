@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
 
-import requests
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, QSettings
 from PyQt5.QtGui import QColor, QFont, QIcon
 from PyQt5.QtWidgets import (
@@ -15,9 +16,10 @@ from PyQt5.QtWidgets import (
 
 from logging_setup import configure_logging, user_data_dir
 from appearance_manager import AppearanceManager
-from launcher_window import LauncherWindow
 from ui_controls import CompactPopupProxyStyle
-from version import LAUNCHER_NAME, LAUNCHER_VERSION, GITHUB_API_LATEST, USER_AGENT
+from version import LAUNCHER_NAME, LAUNCHER_VERSION
+from github_service import check_latest_release
+from update_download import DownloadCancelled, download_verified_asset
 
 log = logging.getLogger("fiercy.startup")
 
@@ -25,14 +27,122 @@ log = logging.getLogger("fiercy.startup")
 class BootstrapWorker(QThread):
     progress = pyqtSignal(int, str)
     completed = pyqtSignal()
+    restart_requested = pyqtSignal()
     failed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self._cancel = threading.Event()
+        self.release_result: dict | None = None
+        self.release_error = ""
+        self.restart_handed_off = False
 
     def cancel(self):
         self._cancel.set()
+
+    @staticmethod
+    def _start_update_helper(archive: Path) -> None:
+        if getattr(sys, "frozen", False):
+            target = Path(sys.executable).resolve().parent
+            helper = target / "FiercyUpdater.exe"
+            command = [str(helper)]
+            mode, entry = "frozen", "FiercyLauncher.exe"
+        else:
+            target = Path(__file__).resolve().parent
+            helper = target / "update_helper.py"
+            command = [sys.executable, str(helper)]
+            mode, entry = "source", "main.py"
+
+        if not helper.is_file():
+            raise FileNotFoundError(
+                "Не найден отдельный помощник обновления: " + str(helper)
+            )
+        command += [
+            "--archive", str(archive),
+            "--target", str(target),
+            "--parent-pid", str(os.getpid()),
+            "--mode", mode,
+            "--entry", entry,
+        ]
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        subprocess.Popen(
+            command,
+            cwd=str(target),
+            close_fds=(os.name != "nt"),
+            creationflags=creation_flags,
+        )
+
+    def _check_and_apply_update(self, data_dir: Path) -> bool:
+        """Return True when updater helper has taken over and this process must exit."""
+        self.progress.emit(38, "Проверка новой версии FiercyLauncher…")
+        try:
+            release = check_latest_release(timeout=(4, 8))
+            self.release_result = release
+        except Exception as exc:
+            self.release_error = str(exc)
+            log.warning("Не удалось проверить обновления при запуске: %s", exc)
+            return False
+
+        if not release.get("update_available"):
+            self.progress.emit(70, "Установлена последняя версия лаунчера.")
+            return False
+
+        settings = QSettings("Fiercy", "FiercyLauncher")
+        auto_install = settings.value("updates/auto_install", True, type=bool)
+        if not auto_install:
+            self.progress.emit(70, f"Доступно обновление {release.get('latest_version')}.")
+            return False
+
+        if self._cancel.is_set():
+            return False
+
+        filename = Path(str(release.get("asset_name") or "FiercyLauncher-update.zip")).name
+        update_dir = data_dir / "updates"
+        update_dir.mkdir(parents=True, exist_ok=True)
+        archive = update_dir / filename
+        latest = str(release.get("latest_version", "новая версия"))
+        self.progress.emit(42, f"Подготовка обновления {latest}…")
+
+        def report(done: int, total: int, speed: float, status: str) -> None:
+            if self._cancel.is_set():
+                return
+            ratio = min(1.0, done / total) if total else 0.0
+            percent = 44 + int(ratio * 46)
+            speed_mbps = speed / (1024 * 1024)
+            detail = f"{status} · {speed_mbps:.1f} МБ/с"
+            self.progress.emit(percent, detail)
+
+        try:
+            archive = download_verified_asset(
+                str(release["download_url"]),
+                str(release["sha256"]),
+                archive,
+                expected_size=int(release.get("size", 0) or 0),
+                progress=report,
+                cancel_event=self._cancel,
+                max_workers=8,
+            )
+        except DownloadCancelled:
+            log.info("Пользователь отменил загрузку обновления при запуске")
+            return False
+        except Exception as exc:
+            self.release_error = f"Не удалось скачать обновление {latest}: {exc}"
+            log.exception("Не удалось скачать обновление на этапе запуска")
+            return False
+
+        if self._cancel.is_set():
+            return False
+        self.progress.emit(96, "Обновление проверено. Перезапускаем FiercyLauncher…")
+        try:
+            self._start_update_helper(archive)
+            self.restart_handed_off = True
+            self.progress.emit(100, f"Устанавливаем обновление {latest}. Лаунчер перезапустится автоматически…")
+            self.restart_requested.emit()
+            return True
+        except Exception as exc:
+            self.release_error = f"Архив обновления скачан, но не удалось запустить установщик: {exc}"
+            log.exception("Не удалось передать обновление помощнику")
+            return False
 
     def run(self):
         try:
@@ -40,43 +150,35 @@ class BootstrapWorker(QThread):
             data = user_data_dir()
             (data / "logs").mkdir(parents=True, exist_ok=True)
             (data / "updates").mkdir(parents=True, exist_ok=True)
+            (data / "profiles").mkdir(parents=True, exist_ok=True)
             if self._cancel.is_set():
                 return
 
-            self.progress.emit(26, "Проверка файлов лаунчера…")
+            self.progress.emit(24, "Проверка файлов лаунчера…")
             root = Path(__file__).resolve().parent
-            required = []
-            # В скомпилированном EXE файлов .py нет, поэтому проверяем только наличие ассетов
-            if not getattr(sys, 'frozen', False):
-                required = [root / "launcher_window.py", root / "minecraft_service.py",
-                            root / "auth_manager.py", root / "appearance_manager.py",
-                            root / "toast_notifications.py", root / "path_utils.py",
-                            root / "discord_presence.py", root / "assets" / "themes" / "dark.qss"]
+            if not getattr(sys, "frozen", False):
+                required = [
+                    root / "launcher_window.py", root / "minecraft_service.py",
+                    root / "auth_manager.py", root / "appearance_manager.py",
+                    root / "toast_notifications.py", root / "path_utils.py",
+                    root / "discord_presence.py", root / "github_service.py",
+                    root / "update_download.py", root / "update_helper.py",
+                    root / "assets" / "themes" / "dark.qss",
+                ]
             else:
                 required = [root / "assets" / "themes" / "dark.qss"]
-
             missing = [str(path) for path in required if not path.is_file()]
             if missing:
                 raise FileNotFoundError("В комплекте не найдены обязательные файлы:\n" + "\n".join(missing))
-            if self._cancel.is_set(): 
-                return
-
-            self.progress.emit(52, "Проверка обновлений GitHub Releases…")
-            try:
-                response = requests.get(
-                    GITHUB_API_LATEST, timeout=(3, 7),
-                    headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
-                )
-                if response.status_code not in (200, 404):
-                    response.raise_for_status()
-            except requests.RequestException as exc:
-                # GitHub не обязателен для локального старта: лаунчер продолжит работу.
-                log.warning("GitHub Releases недоступен во время старта: %s", exc)
             if self._cancel.is_set():
                 return
 
-            self.progress.emit(82, "Проверка локальных профилей и пользовательских данных…")
-            (data / "profiles").mkdir(parents=True, exist_ok=True)
+            if self._check_and_apply_update(data):
+                return
+            if self._cancel.is_set():
+                return
+
+            self.progress.emit(94, "Проверка локальных профилей и пользовательских данных…")
             self.progress.emit(100, "Готово. Открываем FiercyLauncher…")
             self.completed.emit()
         except Exception as exc:
@@ -171,6 +273,7 @@ class Application:
         self.animation = None
         self.worker.progress.connect(self.splash.set_progress)
         self.worker.completed.connect(self.show_main)
+        self.worker.restart_requested.connect(self.exit_for_update)
         self.worker.failed.connect(self.startup_failed)
         self.worker.finished.connect(self._worker_finished)
         self.splash.cancelled.connect(self.cancel_startup)
@@ -206,7 +309,15 @@ class Application:
         self.splash.cancel_button.clicked.connect(self.app.quit)
         self.splash.show()
 
+    def exit_for_update(self):
+        self.splash.cancel_button.hide()
+        self.splash.note_label.setText("Обновление скачано и проверено. Сейчас установится новая версия и лаунчер откроется снова.")
+        QTimer.singleShot(350, self.app.quit)
+
     def show_main(self):
+        # Import the large GUI only after bootstrap and update checks have finished.
+        from launcher_window import LauncherWindow
+
         self.window = LauncherWindow()
         self.window.setWindowOpacity(0.0)
         self.window.show()
@@ -217,6 +328,19 @@ class Application:
         self.animation.setEndValue(1.0)
         self.animation.setEasingCurve(QEasingCurve.OutCubic)
         self.animation.start()
+        if self.worker.release_error:
+            try:
+                self.window._release_failed(self.worker.release_error)
+            except Exception:
+                log.warning("Update check issue: %s", self.worker.release_error)
+        elif self.worker.release_result:
+            try:
+                # When auto-update is disabled this presents the available release
+                # without downloading it. When enabled, successful updates have
+                # already been handed to the external updater before the GUI opens.
+                self.window._release_checked(self.worker.release_result, True)
+            except Exception:
+                log.debug("Не удалось показать результат проверки обновления в главном окне", exc_info=True)
 
 
 def main() -> int:

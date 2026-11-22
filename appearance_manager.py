@@ -278,4 +278,20 @@ QTabWidget#ProfileContentTabs QTabBar {{ background: transparent; border: 0; }}
 QTabWidget#ProfileContentTabs QTabBar::tab {{ background: {p['panel_alt']}; color: {p['muted']}; border: 1px solid {p['border']}; padding: 9px 16px; margin-right: 5px; border-top-left-radius: 9px; border-top-right-radius: 9px; }}
 QTabWidget#ProfileContentTabs QTabBar::tab:selected {{ background: {p['panel']}; color: {p['text']}; border-bottom-color: {p['panel']}; font-weight: 800; }}
 QLabel#ModrinthGalleryImage {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: 9px; color: {p['muted']}; }}
+/* Profile and Modrinth UI refinements */
+QListWidget#ProfileModsList {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: {r_card}px; padding: 7px; outline: 0; }}
+QListWidget#ProfileModsList::item {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 8px; margin: 2px 0; padding: 3px; }}
+QListWidget#ProfileModsList::item:selected {{ background: {p['selection']}; border-color: {p['accent']}; color: {p['text']}; }}
+QLabel#InstalledModIcon {{ background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: 8px; color: {p['accent2']}; font-size: 8pt; font-weight: 900; }}
+QPushButton#InstalledModTitle {{ text-align: left; color: {p['text']}; background: transparent; border: 0; padding: 5px 8px; font-weight: 800; }}
+QPushButton#InstalledModTitle:hover {{ color: {p['accent2']}; background: {p['panel_alt']}; border-radius: 6px; }}
+QPushButton#ModTypeFilter {{ color: {p['muted']}; background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: 8px 12px; font-weight: 900; }}
+QPushButton#ModTypeFilter:hover {{ color: {p['text']}; border-color: {p['accent']}; }}
+QPushButton#ModTypeFilter:checked {{ color: {p['button_text']}; background: {button_bg}; border: 1px solid {p['accent2']}; }}
+QFrame#ModrinthDetailsHeader {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QFrame#ModrinthDetailsFooter {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QScrollArea#ModrinthDetailsScroll, QScrollArea#ModrinthGalleryScroll {{ background: transparent; border: 0; }}
+QTextBrowser#ModrinthProjectBody {{ background: {p['window']}; color: {p['text']}; border: 0; padding: 10px 12px; selection-background-color: {p['selection']}; }}
+QLabel#SectionTitle {{ color: {p['accent2']}; font-size: 13pt; font-weight: 900; padding: 4px 0; }}
+QFrame#ActionGroup {{ background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
 """
