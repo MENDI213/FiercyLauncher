@@ -3,27 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FiercyLauncher — Твой мир Minecraft</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+    <title>FiercyLauncher — Minecraft нового поколения</title>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;800;900&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #090D18;
-            --card: #121C30;
-            --accent: #9B5CFF;
-            --accent2: #27D7E8;
-            --text: #F4F7FF;
-            --muted: #9BAAC5;
-            --border: #2B3A56;
+            --bg: #05070E;
+            --card: #101528;
+            --accent-1: #8A2BE2;
+            --accent-2: #FF007F;
+            --accent-3: #00E5FF;
+            --text: #FFFFFF;
+            --muted: #8A97B0;
+            --border: #23304A;
         }
 
-        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', sans-serif; }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Montserrat', sans-serif; }
         
         body {
             background-color: var(--bg);
             color: var(--text);
             overflow-x: hidden;
-            background-image: radial-gradient(circle at top right, rgba(155, 92, 255, 0.15), transparent 40%),
-                              radial-gradient(circle at bottom left, rgba(39, 215, 232, 0.1), transparent 40%);
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(138, 43, 226, 0.15), transparent 30%),
+                radial-gradient(circle at 90% 80%, rgba(255, 0, 127, 0.15), transparent 30%),
+                radial-gradient(circle at 50% 50%, rgba(0, 229, 255, 0.05), transparent 40%);
+            background-attachment: fixed;
         }
 
         /* Навигация */
@@ -31,55 +35,63 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 20px 50px;
-            background: rgba(9, 13, 24, 0.8);
-            backdrop-filter: blur(10px);
+            padding: 25px 60px;
+            background: rgba(5, 7, 14, 0.7);
+            backdrop-filter: blur(15px);
             position: fixed;
             width: 100%;
             top: 0;
             z-index: 100;
-            border-bottom: 1px solid rgba(43, 58, 86, 0.5);
+            border-bottom: 1px solid rgba(35, 48, 74, 0.4);
         }
 
         .logo {
-            font-size: 24px;
+            font-size: 28px;
             font-weight: 900;
-            letter-spacing: 1px;
+            letter-spacing: 1.5px;
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 15px;
+            text-transform: uppercase;
         }
 
         .logo-icon {
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            width: 40px;
-            height: 40px;
-            border-radius: 10px;
+            background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
             display: flex;
             justify-content: center;
             align-items: center;
             color: white;
-            font-size: 22px;
+            font-size: 26px;
+            box-shadow: 0 0 20px rgba(255, 0, 127, 0.4);
         }
 
-        nav { display: flex; gap: 30px; align-items: center; }
+        nav { display: flex; gap: 40px; align-items: center; }
         nav a {
             color: var(--muted);
             text-decoration: none;
-            font-weight: 600;
+            font-weight: 700;
+            font-size: 16px;
             transition: color 0.3s;
             cursor: pointer;
         }
         nav a:hover { color: var(--text); }
 
         .btn-nav {
-            background: rgba(43, 58, 86, 0.5);
-            padding: 10px 20px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            transition: all 0.3s;
+            background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+            padding: 12px 25px;
+            border-radius: 30px;
+            border: none;
+            color: white;
+            font-weight: 800;
+            font-size: 16px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
-        .btn-nav:hover { background: var(--border); }
+        .btn-nav:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(255, 0, 127, 0.5); }
 
         /* Главный экран */
         .hero {
@@ -90,138 +102,204 @@
             align-items: center;
             text-align: center;
             padding: 0 20px;
-            margin-top: 60px;
+            margin-top: 80px;
         }
 
         .hero h1 {
-            font-size: 72px;
+            font-size: clamp(60px, 10vw, 110px);
             font-weight: 900;
             line-height: 1.1;
-            margin-bottom: 20px;
-            background: linear-gradient(to right, #fff, var(--muted));
+            margin-bottom: 30px;
+            background: linear-gradient(135deg, #FFF 20%, var(--accent-3) 50%, var(--accent-2) 80%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -2px;
+        }
+
+        .hero p {
+            font-size: 22px;
+            color: var(--muted);
+            max-width: 700px;
+            margin-bottom: 50px;
+            line-height: 1.6;
+            font-weight: 500;
+        }
+
+        .btn-download {
+            background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+            color: white;
+            text-decoration: none;
+            padding: 22px 60px;
+            font-size: 24px;
+            font-weight: 900;
+            border-radius: 16px;
+            transition: transform 0.3s, box-shadow 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 15px;
+            box-shadow: 0 10px 40px rgba(255, 0, 127, 0.5);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-download:hover {
+            transform: translateY(-5px) scale(1.02);
+            box-shadow: 0 20px 60px rgba(255, 0, 127, 0.7);
+        }
+
+        .version-badge {
+            margin-top: 25px;
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--accent-3);
+            background: rgba(0, 229, 255, 0.1);
+            padding: 8px 20px;
+            border-radius: 30px;
+            border: 1px solid rgba(0, 229, 255, 0.3);
+            letter-spacing: 1px;
+        }
+
+        /* Блок с технологиями (вместо скучных карточек) */
+        .tech-section {
+            padding: 100px 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .tech-section h2 {
+            font-size: 48px;
+            font-weight: 900;
+            margin-bottom: 60px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            background: linear-gradient(to right, var(--accent-3), var(--accent-1));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
-        .hero p {
-            font-size: 20px;
-            color: var(--muted);
-            max-width: 600px;
-            margin-bottom: 40px;
-            line-height: 1.5;
-        }
-
-        .btn-download {
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            color: white;
-            text-decoration: none;
-            padding: 18px 45px;
-            font-size: 20px;
-            font-weight: 800;
-            border-radius: 12px;
-            transition: transform 0.2s, box-shadow 0.2s;
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            box-shadow: 0 10px 30px rgba(155, 92, 255, 0.4);
-        }
-
-        .btn-download:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 15px 40px rgba(155, 92, 255, 0.6);
-        }
-
-        .version-badge {
-            margin-top: 20px;
-            font-size: 14px;
-            color: var(--muted);
-            background: rgba(43, 58, 86, 0.3);
-            padding: 5px 15px;
-            border-radius: 20px;
-            border: 1px solid var(--border);
-        }
-
-        /* Преимущества */
-        .features {
-            padding: 100px 50px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        .features h2 {
-            text-align: center;
-            font-size: 40px;
-            margin-bottom: 50px;
-        }
-
-        .grid {
+        .tech-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 30px;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 40px;
         }
 
-        .card {
+        .tech-item {
             background: var(--card);
             border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 30px;
-            transition: transform 0.3s, border-color 0.3s;
+            border-radius: 24px;
+            padding: 40px 30px;
+            transition: transform 0.3s, border-color 0.3s, box-shadow 0.3s;
+            text-align: left;
+            position: relative;
+            overflow: hidden;
         }
 
-        .card:hover {
-            transform: translateY(-5px);
-            border-color: var(--accent);
+        .tech-item::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 4px;
+            background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
         }
 
-        .card h3 {
-            font-size: 22px;
+        .tech-item:hover {
+            transform: translateY(-10px);
+            border-color: var(--accent-2);
+            box-shadow: 0 20px 40px rgba(255, 0, 127, 0.1);
+        }
+
+        .tech-item h3 {
+            font-size: 26px;
+            font-weight: 800;
             margin-bottom: 15px;
-            color: var(--accent2);
+            color: var(--text);
         }
 
-        .card p { color: var(--muted); line-height: 1.6; }
+        .tech-item p {
+            color: var(--muted);
+            font-size: 16px;
+            line-height: 1.7;
+        }
 
-        /* Футер и Юридическая часть */
+        /* Юридический футер */
         footer {
             border-top: 1px solid var(--border);
-            padding: 40px 50px;
+            padding: 60px 20px;
             text-align: center;
             color: var(--muted);
             font-size: 14px;
             line-height: 1.8;
+            background: rgba(5, 7, 14, 0.9);
         }
 
-        footer .legal {
-            max-width: 800px;
-            margin: 0 auto 20px auto;
-            font-size: 12px;
-            opacity: 0.7;
+        .legal-box {
+            max-width: 1000px;
+            margin: 0 auto 40px auto;
+            background: rgba(35, 48, 74, 0.2);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 30px;
+            text-align: left;
         }
-        
+
+        .legal-box h4 {
+            color: var(--text);
+            font-size: 18px;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .legal-box p {
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+
+        .legal-box a {
+            color: var(--accent-3);
+            text-decoration: none;
+        }
+
+        .legal-box a:hover { text-decoration: underline; }
+
+        .footer-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1000px;
+            margin: 0 auto;
+            font-size: 13px;
+            color: var(--muted);
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding-top: 30px;
+        }
+
+        /* Модальное окно */
         .admin-modal {
             display: none;
             position: fixed;
             top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8);
+            background: rgba(0,0,0,0.85);
             justify-content: center;
             align-items: center;
             z-index: 1000;
-            backdrop-filter: blur(5px);
+            backdrop-filter: blur(8px);
         }
 
         .modal-content {
             background: var(--card);
-            padding: 40px;
-            border-radius: 20px;
-            border: 1px solid var(--border);
+            padding: 50px;
+            border-radius: 24px;
+            border: 1px solid var(--accent-1);
             text-align: center;
-            max-width: 400px;
+            max-width: 500px;
+            box-shadow: 0 0 50px rgba(138, 43, 226, 0.3);
         }
-        .modal-content h2 { margin-bottom: 15px; }
-        .modal-content p { color: var(--muted); margin-bottom: 20px; }
+        .modal-content h2 { font-size: 28px; margin-bottom: 20px; color: var(--text); }
+        .modal-content p { color: var(--muted); margin-bottom: 30px; font-size: 16px; }
         .modal-content button {
-            background: var(--accent);
-            color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold;
+            background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+            color: white; border: none; padding: 15px 30px; border-radius: 12px; cursor: pointer; font-weight: 800; font-size: 16px; text-transform: uppercase;
         }
     </style>
 </head>
@@ -230,59 +308,66 @@
     <header>
         <div class="logo">
             <div class="logo-icon">F</div>
-            FIERCY
+            Fiercy
         </div>
         <nav>
-            <a href="#features">Возможности</a>
-            <a onclick="showModal('Админ-панель', 'Эта функция находится в разработке. Скоро здесь появится управление сборками!')">Админ-панель</a>
-            <a onclick="showModal('Профиль', 'Авторизация через Microsoft и личный кабинет появятся в следующих обновлениях.')">Профиль</a>
+            <a onclick="showModal('Админ-панель', 'Раздел находится в разработке. Скоро здесь появится управление сборками и статистика.')">Админ-панель</a>
+            <a onclick="showModal('Личный кабинет', 'Авторизация и профиль пользователя появятся в ближайших обновлениях.')">Профиль</a>
             <a href="https://github.com/MENDI213/FiercyLauncher" target="_blank">GitHub</a>
+            <a href="#" class="btn-nav" id="download-btn-nav">Скачать</a>
         </nav>
     </header>
 
     <main class="hero">
-        <h1>Время играть.</h1>
-        <p>Твои сборки, твои моды и твои правила. Быстрый, красивый и надежный лаунчер для Minecraft Java Edition.</p>
+        <h1>ТВОЙ МИР<br>БЕЗ ГРАНИЦ</h1>
+        <p>Мощный, красивый и безопасный лаунчер для Minecraft. Установка в один клик, поддержка модов и полная персонализация.</p>
         
         <a href="#" id="download-btn" class="btn-download">
-            <span>↓</span> Скачать FiercyLauncher
+            <span>▼</span> Скачать сейчас
         </a>
-        <div class="version-badge" id="version-badge">Загрузка информации о версии...</div>
+        <div class="version-badge" id="version-badge">Загрузка...</div>
     </main>
 
-    <section class="features" id="features">
-        <h2>Почему Fiercy?</h2>
-        <div class="grid">
-            <div class="card">
-                <h3>Оффлайн и Онлайн</h3>
-                <p>Играй по сети с друзьями или запускай любимые сборки в одиночном режиме с любого аккаунта.</p>
+    <section class="tech-section">
+        <h2>Технологии будущего</h2>
+        <div class="tech-grid">
+            <div class="tech-item">
+                <h3>⚡ Мгновенный старт</h3>
+                <p>Автоматическая загрузка Java и библиотек. Забудь о ручной настройке путей и версий.</p>
             </div>
-            <div class="card">
-                <h3>Менеджер модов</h3>
-                <p>Встроенный каталог Modrinth и CurseForge. Устанавливай моды в один клик, не заходя в браузер.</p>
+            <div class="tech-item">
+                <h3>🛡️ Защита данных</h3>
+                <p>Безопасное хранение сессий и автоматическое восстановление повреждённых файлов игры.</p>
             </div>
-            <div class="card">
-                <h3>Умная установка</h3>
-                <p>Лаунчер сам скачает нужную версию Java и восстановит поврежденные файлы при плохом интернете.</p>
+            <div class="tech-item">
+                <h3>🎨 Стиль и свобода</h3>
+                <p>Меняй цвета, шрифты и формы интерфейса под себя. Твой лаунчер — твои правила.</p>
             </div>
-            <div class="card">
-                <h3>Персонализация</h3>
-                <p>Шесть готовых цветовых тем, редактор шрифтов и радиусов. Сделай лаунчер по-настоящему своим.</p>
+            <div class="tech-item">
+                <h3>📦 Всё в одном</h3>
+                <p>Каталог модов Modrinth и CurseForge, импорт сборок и управление профилями в едином окне.</p>
             </div>
         </div>
     </section>
 
     <footer>
-        <div class="legal">
-            <strong>Юридическая информация:</strong> FiercyLauncher является неофициальным программным обеспечением. Мы не affiliated with, не связаны и не поддерживаются компанией Mojang Studios или Microsoft. Название "Minecraft", а также все связанные с ним торговые марки, логотипы и графика являются собственностью Mojang Synergies AB.<br><br>
-            Играя в Minecraft, вы соглашаетесь с пользовательским соглашением (EULA) Mojang. FiercyLauncher не обходит проверки лицензии и не предоставляет доступ к пиратским серверам. Запуск игры возможен только при наличии приобретенной лицензии или в оффлайн-режиме согласно правилам Mojang.
+        <div class="legal-box">
+            <h4>Юридическая информация</h4>
+            <p><strong>Владелец ресурса:</strong> FiercyCity / MEND213 (Физическое лицо)</p>
+            <p><strong>УНП:</strong> [Укажите УНП, если вы зарегистрированы как ИП/ООО]</p>
+            <p><strong>Контакты:</strong> support@fiercycity.com | +375 (XX) XXX-XX-XX</p>
+            <p><strong>Адрес для обращений:</strong> Республика Беларусь, г. [Город]</p>
+            <p style="margin-top: 15px; font-size: 12px; color: #5a6b8a;">
+                FiercyLauncher является неофициальным программным обеспечением. Мы не связаны с Mojang Studios или Microsoft. Название "Minecraft" и все связанные с ним торговые марки принадлежат Mojang Synergies AB. 
+                <br><a href="#">Политика конфиденциальности</a> | <a href="#">Пользовательское соглашение</a> | <a href="#">Использование Cookie</a>
+            </p>
         </div>
-        <div>
-            &copy; 2026 FiercyLauncher. Все права защищены. Разработано сообществом MENDI213.
+        <div class="footer-bottom">
+            <div>&copy; 2026 FiercyCity. Все права защищены.</div>
+            <div>Разработано с ❤️ для сообщества Minecraft</div>
         </div>
     </footer>
 
-    <!-- Модальное окно-заглушка -->
     <div class="admin-modal" id="modal">
         <div class="modal-content">
             <h2 id="modal-title">Заголовок</h2>
@@ -292,7 +377,6 @@
     </div>
 
     <script>
-        // Показываем модальные окна
         function showModal(title, text) {
             document.getElementById('modal-title').innerText = title;
             document.getElementById('modal-text').innerText = text;
@@ -303,10 +387,10 @@
             document.getElementById('modal').style.display = 'none';
         }
 
-        // Умная кнопка скачивания (берет последний релиз с GitHub API)
         async function fetchLatestRelease() {
-            const repo = 'MENDI213/FiercyLauncher'; // Твой репозиторий
-            const btn = document.getElementById('download-btn');
+            const repo = 'MENDI213/FiercyLauncher';
+            const btnHero = document.getElementById('download-btn');
+            const btnNav = document.getElementById('download-btn-nav');
             const badge = document.getElementById('version-badge');
 
             try {
@@ -315,26 +399,24 @@
                 
                 const data = await response.json();
                 const version = data.tag_name;
-                
-                // Ищем файл FiercySetup.exe в списке файлов релиза
                 const asset = data.assets.find(a => a.name === 'FiercySetup.exe');
                 
                 if (asset) {
-                    btn.href = asset.browser_download_url;
-                    badge.innerText = `Последняя версия: ${version} · Windows 64-bit`;
+                    btnHero.href = asset.browser_download_url;
+                    btnNav.href = asset.browser_download_url;
+                    badge.innerText = `Версия ${version} · Windows 64-bit`;
                 } else {
-                    // Если файла нет, ведем на страницу релиза
-                    btn.href = data.html_url;
-                    badge.innerText = `Версия ${version} (перейти на GitHub)`;
+                    btnHero.href = data.html_url;
+                    btnNav.href = data.html_url;
+                    badge.innerText = `Версия ${version} (GitHub)`;
                 }
             } catch (error) {
-                // Если API заблокирован или произошла ошибка
-                btn.href = `https://github.com/${repo}/releases/latest`;
+                btnHero.href = `https://github.com/${repo}/releases/latest`;
+                btnNav.href = `https://github.com/${repo}/releases/latest`;
                 badge.innerText = "Скачать с GitHub Releases";
             }
         }
 
-        // Запускаем при загрузке
         fetchLatestRelease();
     </script>
 </body>
