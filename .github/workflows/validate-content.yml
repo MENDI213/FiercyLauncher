@@ -1,0 +1,37 @@
+name: Validate public launcher JSON
+
+on:
+  push:
+    paths:
+      - 'content/**/*.json'
+  pull_request:
+    paths:
+      - 'content/**/*.json'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Validate JSON schemas
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          required = ["launcher.json", "news.json", "versions.json"]
+          for name in required:
+              path = Path("content") / name
+              data = json.loads(path.read_text(encoding="utf-8"))
+              assert isinstance(data, dict), f"{name}: top-level value must be an object"
+              assert data.get("schema") == 1, f"{name}: schema must be 1"
+          launcher = json.loads(Path("content/launcher.json").read_text(encoding="utf-8"))
+          assert isinstance(launcher.get("launcher", {}).get("maintenance_mode", False), bool)
+          news = json.loads(Path("content/news.json").read_text(encoding="utf-8"))
+          assert isinstance(news.get("items", []), list)
+          versions = json.loads(Path("content/versions.json").read_text(encoding="utf-8"))
+          assert isinstance(versions.get("supported_minecraft_versions", []), list)
+          print("Public launcher JSON is valid")
+          PY

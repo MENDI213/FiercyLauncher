@@ -1,0 +1,62 @@
+name: Build and publish launcher release
+
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Verify tag matches app version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $versionLine = Select-String -Path version.py -Pattern '^LAUNCHER_VERSION\s*=\s*"([^"]+)"'
+          $appVersion = $versionLine.Matches[0].Groups[1].Value
+          $tagVersion = $env:RELEASE_TAG.TrimStart('v', 'V')
+          if ($appVersion -ne $tagVersion) { throw "version.py has $appVersion but tag is $tagVersion" }
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build launcher and updater
+        run: |
+          python -m PyInstaller --noconfirm --clean launcher.spec
+          python -m PyInstaller --noconfirm --clean updater_helper.spec --distpath dist/updater --workpath build/updater
+          Copy-Item -Force dist/updater/FiercyUpdater.exe dist/FiercyLauncher/FiercyUpdater.exe
+
+      - name: Build bootstrap setup installer
+        run: |
+          New-Item -ItemType Directory -Force -Path release_assets | Out-Null
+          python -m PyInstaller --noconfirm --clean fiercy_setup.spec --distpath dist/setup --workpath build/setup
+          Copy-Item -Force dist/setup/FiercySetup.exe release_assets/FiercySetup.exe
+
+      - name: Package release assets
+        run: python package_release.py
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FiercyLauncher ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release_assets/FiercyLauncher-source.zip
+            release_assets/FiercyLauncher-win64.zip
+            release_assets/SHA256SUMS.txt
+            release_assets/FiercySetup.exe

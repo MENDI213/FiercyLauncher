@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import logging
+import sys
+import threading
+from pathlib import Path
+
+import requests
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, QSettings
+from PyQt5.QtGui import QColor, QFont, QIcon
+from PyQt5.QtWidgets import (
+    QApplication, QDialog, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
+    QProgressBar, QPushButton, QFrame, QGraphicsOpacityEffect,
+)
+
+from logging_setup import configure_logging, user_data_dir
+from appearance_manager import AppearanceManager
+from launcher_window import LauncherWindow
+from version import LAUNCHER_NAME, LAUNCHER_VERSION, GITHUB_API_LATEST, USER_AGENT
+
+log = logging.getLogger("fiercy.startup")
+
+
+class BootstrapWorker(QThread):
+    progress = pyqtSignal(int, str)
+    completed = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._cancel = threading.Event()
+
+    def cancel(self):
+        self._cancel.set()
+
+    def run(self):
+        try:
+            self.progress.emit(8, "Подготовка пользовательской папки…")
+            data = user_data_dir()
+            (data / "logs").mkdir(parents=True, exist_ok=True)
+            (data / "updates").mkdir(parents=True, exist_ok=True)
+            if self._cancel.is_set():
+                return
+
+            self.progress.emit(26, "Проверка файлов лаунчера…")
+            root = Path(__file__).resolve().parent
+            required = [root / "launcher_window.py", root / "minecraft_service.py",
+                        root / "auth_manager.py", root / "appearance_manager.py",
+                        root / "toast_notifications.py", root / "path_utils.py",
+                        root / "assets" / "themes" / "dark.qss"]
+            missing = [str(path) for path in required if not path.is_file()]
+            if missing:
+                raise FileNotFoundError("В комплекте не найдены обязательные файлы:\n" + "\n".join(missing))
+            if self._cancel.is_set():
+                return
+
+            self.progress.emit(52, "Проверка обновлений GitHub Releases…")
+            try:
+                response = requests.get(
+                    GITHUB_API_LATEST, timeout=(3, 7),
+                    headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+                )
+                if response.status_code not in (200, 404):
+                    response.raise_for_status()
+            except requests.RequestException as exc:
+                # GitHub не обязателен для локального старта: лаунчер продолжит работу.
+                log.warning("GitHub Releases недоступен во время старта: %s", exc)
+            if self._cancel.is_set():
+                return
+
+            self.progress.emit(82, "Проверка локальных профилей и пользовательских данных…")
+            (data / "profiles").mkdir(parents=True, exist_ok=True)
+            self.progress.emit(100, "Готово. Открываем FiercyLauncher…")
+            self.completed.emit()
+        except Exception as exc:
+            log.exception("Ошибка начальной проверки")
+            self.failed.emit(str(exc))
+
+
+class SplashScreen(QDialog):
+    cancelled = pyqtSignal()
+
+    def __init__(self):
+        super().__init__(None)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window | Qt.WindowStaysOnTopHint)
+        self.setObjectName("SplashDialog")
+        self.setFixedSize(520, 300)
+        appearance = AppearanceManager(QSettings("Fiercy", "FiercyLauncher")).load()
+        palette, geometry = appearance["palette"], appearance["geometry"]
+        accent_bg = (f"qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 {palette['accent']},stop:1 {palette['accent2']})"
+                     if geometry.get("gradients", True) else palette["accent"])
+        splash_bg = (f"qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 {palette['window']},stop:1 {palette['panel']})"
+                     if geometry.get("background_gradient", True) else palette["window"])
+        self.setStyleSheet(f"""
+            QDialog#SplashDialog {{ background: {splash_bg}; border: 1px solid {palette['border']}; border-radius: {geometry['window_radius']}px; }}
+            QLabel {{ color: {palette['text']}; font-family: '{geometry['font_family']}'; }}
+            QLabel#Mark {{ background: {accent_bg}; color: {palette['button_text']}; border-radius: {geometry['card_radius']}px; font-size: 36pt; font-weight: 900; }}
+            QLabel#Brand {{ font-size: 19pt; font-weight: 900; letter-spacing: 1px; }}
+            QLabel#Sub {{ color: {palette['muted']}; font-size: 8pt; }}
+            QLabel#Status {{ color: {palette['text']}; font-size: 10pt; }}
+            QLabel#Percent {{ color: {palette['accent2']}; font-weight: 800; }}
+            QProgressBar {{ background: {palette['input']}; border: 1px solid {palette['border']}; border-radius: {geometry['control_radius']}px; height: 13px; text-align: center; color: transparent; }}
+            QProgressBar::chunk {{ background: {accent_bg}; border-radius: {geometry['control_radius']}px; }}
+            QPushButton {{ background: {palette['panel_alt']}; border: 1px solid {palette['border']}; border-radius: {geometry['button_radius']}px; color: {palette['text']}; padding: 7px 12px; }}
+            QPushButton:hover {{ background: {palette['accent']}; color: {palette['button_text']}; }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 27, 30, 23)
+        layout.setSpacing(14)
+        head = QHBoxLayout()
+        mark = QLabel("F")
+        mark.setObjectName("Mark")
+        mark.setAlignment(Qt.AlignCenter)
+        mark.setFixedSize(78, 78)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(4)
+        brand = QLabel(LAUNCHER_NAME.upper())
+        brand.setObjectName("Brand")
+        sub = QLabel(f"MINECRAFT JAVA EDITION  ·  VERSION {LAUNCHER_VERSION}")
+        sub.setObjectName("Sub")
+        text_col.addWidget(brand)
+        text_col.addWidget(sub)
+        head.addWidget(mark)
+        head.addSpacing(12)
+        head.addLayout(text_col)
+        head.addStretch(1)
+        layout.addLayout(head)
+        layout.addStretch(1)
+        self.status = QLabel("Подготовка…")
+        self.status.setObjectName("Status")
+        layout.addWidget(self.status)
+        progress_row = QHBoxLayout()
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.percent = QLabel("0%")
+        self.percent.setObjectName("Percent")
+        self.percent.setFixedWidth(42)
+        progress_row.addWidget(self.progress, 1)
+        progress_row.addWidget(self.percent)
+        layout.addLayout(progress_row)
+        bottom = QHBoxLayout()
+        self.note_label = QLabel("Проверка выполняется в отдельном потоке — интерфейс не зависает.")
+        self.note_label.setObjectName("Sub")
+        self.note_label.setWordWrap(True)
+        bottom.addWidget(self.note_label, 1)
+        self.cancel_button = QPushButton("Отмена")
+        self.cancel_button.clicked.connect(self.cancelled.emit)
+        bottom.addWidget(self.cancel_button)
+        layout.addLayout(bottom)
+
+    def set_progress(self, value: int, text: str):
+        self.progress.setValue(value)
+        self.percent.setText(f"{value}%")
+        self.status.setText(text)
+
+
+class Application:
+    def __init__(self, app: QApplication):
+        self.app = app
+        self.splash = SplashScreen()
+        self.worker = BootstrapWorker()
+        self.window = None
+        self.animation = None
+        self.worker.progress.connect(self.splash.set_progress)
+        self.worker.completed.connect(self.show_main)
+        self.worker.failed.connect(self.startup_failed)
+        self.worker.finished.connect(self._worker_finished)
+        self.splash.cancelled.connect(self.cancel_startup)
+        self._cancel_requested = False
+
+    def start(self):
+        self.splash.show()
+        self.worker.start()
+
+    def cancel_startup(self):
+        self._cancel_requested = True
+        self.worker.cancel()
+        self.splash.status.setText("Отмена запуска…")
+        self.splash.cancel_button.setEnabled(False)
+
+    def _worker_finished(self):
+        if self._cancel_requested:
+            self.splash.close()
+            self.app.quit()
+
+    def startup_failed(self, message: str):
+        # Не показываем системное QMessageBox: ошибка остаётся в том же оформленном splash.
+        log.exception("Начальная проверка FiercyLauncher завершилась ошибкой: %s", message)
+        self.splash.status.setText("Не удалось подготовить лаунчер. Подробности:")
+        self.splash.note_label.setText(str(message)[:600])
+        self.splash.progress.setValue(0)
+        self.splash.percent.setText("!")
+        self.splash.cancel_button.setText("Закрыть")
+        try:
+            self.splash.cancel_button.clicked.disconnect()
+        except TypeError:
+            pass
+        self.splash.cancel_button.clicked.connect(self.app.quit)
+        self.splash.show()
+
+    def show_main(self):
+        self.window = LauncherWindow()
+        self.window.setWindowOpacity(0.0)
+        self.window.show()
+        self.splash.close()
+        self.animation = QPropertyAnimation(self.window, b"windowOpacity", self.window)
+        self.animation.setDuration(260)
+        self.animation.setStartValue(0.0)
+        self.animation.setEndValue(1.0)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.animation.start()
+
+
+def main() -> int:
+    configure_logging()
+    app = QApplication(sys.argv)
+    app.setApplicationName(LAUNCHER_NAME)
+    app.setOrganizationName("Fiercy")
+    app.setStyle("Fusion")
+    app.setFont(QFont("Segoe UI", 10))
+    icon = Path(__file__).resolve().parent / "assets" / "icon.ico"
+    if icon.is_file():
+        app.setWindowIcon(QIcon(str(icon)))
+    controller = Application(app)
+    controller.start()
+    return app.exec_()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
