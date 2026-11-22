@@ -1,0 +1,7 @@
+# Файлы, игнорируемые по умолчанию
+/shelf/
+/workspace.xml
+# Markdown personal settings
+/markdown.xml
+# Запросы HTTP-клиента на базе редактора
+/httpRequests/
