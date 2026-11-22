@@ -9,3 +9,4 @@ CONTENT_URL = f"{GITHUB_RAW_BASE}/content/launcher.json"
 NEWS_URL = f"{GITHUB_RAW_BASE}/content/news.json"
 VERSIONS_URL = f"{GITHUB_RAW_BASE}/content/versions.json"
 USER_AGENT = f"{LAUNCHER_NAME}/{LAUNCHER_VERSION}"
+ 

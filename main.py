@@ -57,7 +57,7 @@ class BootstrapWorker(QThread):
             missing = [str(path) for path in required if not path.is_file()]
             if missing:
                 raise FileNotFoundError("В комплекте не найдены обязательные файлы:\n" + "\n".join(missing))
-            if self._cancel.is_set():
+            if self._cancel.is_set(): 
                 return
 
             self.progress.emit(52, "Проверка обновлений GitHub Releases…")
