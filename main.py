@@ -44,10 +44,16 @@ class BootstrapWorker(QThread):
 
             self.progress.emit(26, "Проверка файлов лаунчера…")
             root = Path(__file__).resolve().parent
-            required = [root / "launcher_window.py", root / "minecraft_service.py",
-                        root / "auth_manager.py", root / "appearance_manager.py",
-                        root / "toast_notifications.py", root / "path_utils.py",
-                        root / "assets" / "themes" / "dark.qss"]
+            required = []
+            # В скомпилированном EXE файлов .py нет, поэтому проверяем только наличие ассетов
+            if not getattr(sys, 'frozen', False):
+                required = [root / "launcher_window.py", root / "minecraft_service.py",
+                            root / "auth_manager.py", root / "appearance_manager.py",
+                            root / "toast_notifications.py", root / "path_utils.py",
+                            root / "assets" / "themes" / "dark.qss"]
+            else:
+                required = [root / "assets" / "themes" / "dark.qss"]
+
             missing = [str(path) for path in required if not path.is_file()]
             if missing:
                 raise FileNotFoundError("В комплекте не найдены обязательные файлы:\n" + "\n".join(missing))
