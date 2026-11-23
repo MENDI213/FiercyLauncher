@@ -2,10 +2,10 @@
   "schema": 1,
   "launcher": {
     "name": "FiercyLauncher",
-    "latest_version": "3.7.0",
-    "minimum_version": "3.7.0",
+    "latest_version": "1.0.0.4",
+    "minimum_version": "1.0.0.3",
     "maintenance_mode": false,
-    "announcement": "Добро пожаловать в FiercyLauncher!",
+    "announcement": "Вышла бета-версия FiercyLauncher 1.0.0.4. Спасибо, что помогаете проверить лаунчер.",
     "recommended_minecraft_version": "1.21.1",
     "recommended_loader": "neoforge"
   },

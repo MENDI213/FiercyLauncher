@@ -313,16 +313,15 @@
             Fiercy
         </div>
         <nav>
-            <a onclick="showModal('Админ-панель', 'Раздел находится в разработке. Скоро здесь появится управление сборками и статистика.')">Админ-панель</a>
-            <a onclick="showModal('Личный кабинет', 'Авторизация и профиль пользователя появятся в ближайших обновлениях.')">Профиль</a>
-            <a href="https://github.com/MENDI213/FiercyLauncher" target="_blank">GitHub</a>
+            <a href="#features">Возможности</a>
+            <a href="https://github.com/MENDI213/FiercyLauncher" target="_blank" rel="noopener noreferrer">GitHub</a>
             <a href="#" class="btn-nav" id="download-btn-nav">Скачать</a>
         </nav>
     </header>
 
     <main class="hero">
-        <h1>ТВОЙ МИР<br>БЕЗ ГРАНИЦ</h1>
-        <p>Мощный, красивый и безопасный лаунчер для Minecraft. Установка в один клик, поддержка модов и полная персонализация.</p>
+        <h1>MINECRAFT.<br>ТВОИ ПРАВИЛА.</h1>
+        <p>Запускай любимые версии Minecraft, собирай собственные сборки и устанавливай моды, ресурспаки и шейдеры из каталога Modrinth.</p>
         
         <a href="#" id="download-btn" class="btn-download">
             <span>▼</span> Скачать сейчас
@@ -330,24 +329,24 @@
         <div class="version-badge" id="version-badge">Загрузка...</div>
     </main>
 
-    <section class="tech-section">
-        <h2>Технологии будущего</h2>
+    <section class="tech-section" id="features">
+        <h2>Всё для игры и сборок</h2>
         <div class="tech-grid">
             <div class="tech-item">
-                <h3>⚡ Мгновенный старт</h3>
-                <p>Автоматическая загрузка Java и библиотек. Забудь о ручной настройке путей и версий.</p>
+                <h3>⚡ Быстрый запуск</h3>
+                <p>Выбирай версию Minecraft, а лаунчер установит необходимые игровые файлы и подходящую Java.</p>
             </div>
             <div class="tech-item">
-                <h3>🛡️ Защита данных</h3>
-                <p>Безопасное хранение сессий и автоматическое восстановление повреждённых файлов игры.</p>
+                <h3>📦 Отдельные сборки</h3>
+                <p>У каждой сборки свои моды, настройки, ресурспаки, шейдеры и сохранения.</p>
             </div>
             <div class="tech-item">
-                <h3>🎨 Стиль и свобода</h3>
-                <p>Меняй цвета, шрифты и формы интерфейса под себя. Твой лаунчер — твои правила.</p>
+                <h3>🧩 Каталог Modrinth</h3>
+                <p>Находи моды, ресурспаки, шейдеры и готовые сборки без персональных API-ключей.</p>
             </div>
             <div class="tech-item">
-                <h3>📦 Всё в одном</h3>
-                <p>Каталог модов Modrinth и CurseForge, импорт сборок и управление профилями в едином окне.</p>
+                <h3>🎨 Настрой под себя</h3>
+                <p>Выбирай оформление и объём оперативной памяти для запуска Minecraft.</p>
             </div>
         </div>
     </section>
@@ -358,7 +357,7 @@
             <p><strong>Владелец ресурса:</strong> FiercyCity / MEND213 (Физическое лицо)</p>
             <p style="margin-top: 15px; font-size: 12px; color: #5a6b8a;">
                 FiercyLauncher является неофициальным программным обеспечением. Мы не связаны с Mojang Studios или Microsoft. Название "Minecraft" и все связанные с ним торговые марки принадлежат Mojang Synergies AB. 
-                <br><a href="#">Политика конфиденциальности</a> | <a href="#">Пользовательское соглашение</a> | <a href="#">Использование Cookie</a>
+                <br>Загрузка приложения выполняется с GitHub Releases. Авторизация Microsoft используется только для входа в Minecraft Java Edition.
             </p>
         </div>
         <div class="footer-bottom">
@@ -367,25 +366,7 @@
         </div>
     </footer>
 
-    <div class="admin-modal" id="modal">
-        <div class="modal-content">
-            <h2 id="modal-title">Заголовок</h2>
-            <p id="modal-text">Текст</p>
-            <button onclick="closeModal()">Понятно</button>
-        </div>
-    </div>
-
     <script>
-        function showModal(title, text) {
-            document.getElementById('modal-title').innerText = title;
-            document.getElementById('modal-text').innerText = text;
-            document.getElementById('modal').style.display = 'flex';
-        }
-
-        function closeModal() {
-            document.getElementById('modal').style.display = 'none';
-        }
-
         async function fetchLatestRelease() {
             const repo = 'MENDI213/FiercyLauncher';
             const btnHero = document.getElementById('download-btn');

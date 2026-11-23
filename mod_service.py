@@ -8,8 +8,9 @@ import os
 import re
 import shutil
 import time
+import tempfile
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 
 import requests
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -19,6 +20,30 @@ from version import USER_AGENT
 log = logging.getLogger("fiercy.mods")
 MODRINTH_API = "https://api.modrinth.com/v2"
 CURSEFORGE_API = "https://api.curseforge.com/v1"
+
+
+def _safe_modrinth_get(url: str, **kwargs):
+    """Follow downloads only to known Modrinth/CurseForge HTTPS hosts."""
+    allowed = ("cdn.modrinth.com", "modrinth.com", "mediafilez.forgecdn.net",
+               "edge.forgecdn.net", "curseforge.com")
+    current = str(url)
+    for _ in range(6):
+        parsed = urlsplit(current)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme != "https" or parsed.username or parsed.password or not any(
+                host == domain or host.endswith("." + domain) for domain in allowed):
+            raise ValueError(f"Загрузка с недоверенного домена запрещена: {host or 'unknown'}")
+        response = requests.get(current, allow_redirects=False, **kwargs)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return response
+        location = response.headers.get("Location")
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+        if not location:
+            raise ValueError("Сервер загрузки вернул пустое перенаправление.")
+        current = urljoin(current, location)
+    raise ValueError("Слишком много перенаправлений при загрузке файла.")
 
 
 def mods_directory(instance_dir: str | Path) -> Path:
@@ -93,16 +118,27 @@ def _download_verified(url: str, destination: Path, hashes: dict | None = None,
             expected = str(hashes.get(algorithm, "")).lower()
             if expected:
                 digesters[algorithm] = (hashlib.new(algorithm), expected)
+    destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temp = destination.with_suffix(destination.suffix + ".download")
+    fd, temp_name = tempfile.mkstemp(prefix=".fiercy-download-", suffix=".part", dir=str(destination.parent))
+    temp = Path(temp_name)
     written = 0
     try:
-        with requests.get(url, stream=True, timeout=(10, 90), headers={"User-Agent": USER_AGENT}) as response:
+        with _safe_modrinth_get(url, stream=True, timeout=(10, 90),
+                               headers={"User-Agent": USER_AGENT}) as response:
             response.raise_for_status()
+            final = urlsplit(str(response.url))
+            final_host = (final.hostname or "").lower().rstrip(".")
+            if final.scheme != "https" or not any(final_host == d or final_host.endswith("." + d)
+                                                   for d in ("cdn.modrinth.com", "modrinth.com",
+                                                             "mediafilez.forgecdn.net", "edge.forgecdn.net",
+                                                             "curseforge.com")):
+                raise ValueError("Файл перенаправлен на недоверенный домен.")
             total = int(response.headers.get("Content-Length", "0") or 0)
             if total > max_size:
                 raise ValueError("Файл мода превышает лимит 500 МБ.")
-            with temp.open("wb") as output:
+            with os.fdopen(fd, "wb") as output:
+                fd = -1
                 for chunk in response.iter_content(256 * 1024):
                     if not chunk:
                         continue
@@ -122,6 +158,12 @@ def _download_verified(url: str, destination: Path, hashes: dict | None = None,
     except Exception:
         temp.unlink(missing_ok=True)
         raise
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 class ModrinthSearchWorker(QThread):
@@ -259,8 +301,8 @@ class ModrinthImageWorker(QThread):
             parsed = urlsplit(self.url)
             if parsed.scheme != "https" or not self._allowed_host(parsed.hostname or ""):
                 raise ValueError("Изображение должно находиться на HTTPS-CDN Modrinth.")
-            with requests.get(self.url, stream=True, timeout=(5, 20),
-                              headers={"User-Agent": USER_AGENT}) as response:
+            with _safe_modrinth_get(self.url, stream=True, timeout=(5, 20),
+                                    headers={"User-Agent": USER_AGENT}) as response:
                 response.raise_for_status()
                 final_url = urlsplit(str(response.url))
                 if final_url.scheme != "https" or not self._allowed_host(final_url.hostname or ""):

@@ -25,7 +25,7 @@ class DiscordPresenceManager:
         self._queue.put(("idle",))
 
     def set_playing(self, version: str, nickname: str, started_at: Optional[int] = None) -> None:
-        self._queue.put(("playing", str(version), str(nickname), int(started_at or (time.time() * 1000))))
+        self._queue.put(("playing", str(version), str(nickname), int(started_at or time.time())))
 
     def shutdown(self) -> None:
         self._queue.put(("shutdown",))
@@ -63,7 +63,7 @@ class DiscordPresenceManager:
                 client_id = new_client_id
                 desired = ("idle",)
                 if enabled and not client_id:
-                    log.warning("Discord Rich Presence включён, но Discord Application ID не заполнен в настройках.")
+                    log.info("Discord custom Rich Presence без Application ID отключён; используйте Registered Games для отображения EXE.")
             elif kind == "idle":
                 desired = ("idle",)
             elif kind == "playing":
@@ -85,18 +85,11 @@ class DiscordPresenceManager:
                     log.info("Discord RPC connected.")
                 if desired[0] == "playing":
                     _, version, nickname, started_at = desired
-                    client.update(
-                        name="Minecraft",
-                        details=f"Версия {version}",
-                        state=f"Игрок: {nickname}",
-                        start=started_at,
-                    )
+                    client.update(details=f"Minecraft · {version}",
+                                  state=f"Игрок: {nickname}" if nickname else "Играет в Minecraft",
+                                  start=started_at)
                 else:
-                    client.update(
-                        name="FiercyLauncher",
-                        details="Выбирает версию Minecraft",
-                        state="В меню лаунчера",
-                    )
+                    client.update(details="В меню лаунчера", state="FiercyLauncher")
             except Exception as exc:
                 log.warning("Discord Rich Presence недоступен: %s", exc)
                 self._close_client(client)

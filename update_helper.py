@@ -9,7 +9,10 @@ import sys
 import tempfile
 import time
 import zipfile
-from pathlib import Path, PurePosixPath
+import hashlib
+import re
+from pathlib import Path
+from secure_archive import safe_extract_zip, validate_zip
 
 PRESERVE = {".venv", ".git", "__pycache__", "logs", "instances", "saves", "mods", "config", "resourcepacks", "shaderpacks"}
 
@@ -42,23 +45,19 @@ def wait_for_process(pid: int, timeout: int = 600) -> None:
     raise TimeoutError("Не удалось дождаться закрытия FiercyLauncher")
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def safe_extract(archive: Path, destination: Path) -> None:
-    base = destination.resolve()
-    with zipfile.ZipFile(archive) as zf:
-        items = zf.infolist()
-        if len(items) > 100_000:
-            raise ValueError("В архиве слишком много файлов")
-        if sum(item.file_size for item in items) > 1_500 * 1024 * 1024:
-            raise ValueError("Распакованный размер обновления превышает 1.5 ГБ")
-        for item in items:
-            name = item.filename.replace("\\", "/")
-            pure = PurePosixPath(name)
-            if pure.is_absolute() or ".." in pure.parts or (pure.parts and ":" in pure.parts[0]):
-                raise ValueError(f"Небезопасный путь в обновлении: {name}")
-            target = (base / Path(*pure.parts)).resolve()
-            if target != base and base not in target.parents:
-                raise ValueError(f"Архив выходит за пределы папки: {name}")
-        zf.extractall(destination)
+    with zipfile.ZipFile(archive, "r") as zf:
+        validate_zip(zf, max_archive_size=2 * 1024**3,
+                     max_total_size=1536 * 1024**2, max_file_size=1024 * 1024**3)
+        safe_extract_zip(zf, destination, max_total_size=1536 * 1024**2)
 
 
 def find_package_root(stage: Path, mode: str) -> Path:
@@ -80,9 +79,22 @@ def copy_package(source: Path, target: Path, backup: Path, mode: str) -> list[Pa
     for current, dirs, files in os.walk(source):
         current_path = Path(current)
         relative = current_path.relative_to(source)
-        dirs[:] = [d for d in dirs if d not in PRESERVE and not d.startswith(".")]
+        safe_dirs = []
+        for dirname in dirs:
+            candidate = current_path / dirname
+            if dirname in PRESERVE or dirname.startswith("."):
+                continue
+            if candidate.is_symlink():
+                raise ValueError(f"В пакете обновления обнаружена символическая ссылка: {candidate}")
+            safe_dirs.append(dirname)
+        dirs[:] = safe_dirs
         dest_dir = target / relative
+        if dest_dir.is_symlink() or getattr(dest_dir, "is_junction", lambda: False)():
+            raise ValueError(f"Каталог приложения является ссылкой: {dest_dir}")
         dest_dir.mkdir(parents=True, exist_ok=True)
+        resolved_dest_dir = dest_dir.resolve()
+        if resolved_dest_dir != target and target not in resolved_dest_dir.parents:
+            raise ValueError(f"Путь обновления выходит за папку приложения: {relative}")
         for name in files:
             # The running standalone updater executable is locked by Windows;
             # it intentionally remains compatible and is replaced in a later
@@ -90,11 +102,23 @@ def copy_package(source: Path, target: Path, backup: Path, mode: str) -> list[Pa
             if mode == "frozen" and name.lower() == "fiercyupdater.exe":
                 continue
             src = current_path / name
+            if src.is_symlink() or not src.is_file():
+                raise ValueError(f"Небезопасный файл в пакете обновления: {src}")
             rel = src.relative_to(source)
             if any(part in PRESERVE or part.startswith(".") for part in rel.parts):
                 continue
             dst = target / rel
+            cursor = target
+            for part in rel.parts[:-1]:
+                cursor = cursor / part
+                if cursor.is_symlink() or getattr(cursor, "is_junction", lambda: False)():
+                    raise ValueError(f"Путь обновления проходит через ссылку или junction: {cursor}")
             dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.is_symlink() or getattr(dst, "is_junction", lambda: False)():
+                raise ValueError(f"Обновление не будет перезаписывать ссылку: {dst}")
+            resolved_parent = dst.parent.resolve()
+            if resolved_parent != target and target not in resolved_parent.parents:
+                raise ValueError(f"Путь обновления выходит за папку приложения: {rel}")
             if dst.exists():
                 old = backup / rel
                 old.parent.mkdir(parents=True, exist_ok=True)
@@ -115,13 +139,32 @@ def main() -> int:
     parser.add_argument("--parent-pid", type=int, required=True)
     parser.add_argument("--mode", choices=("source", "frozen"), required=True)
     parser.add_argument("--entry", default="main.py")
+    parser.add_argument("--sha256", default="", help="Optional SHA-256; older launchers use the already-verified download flow.")
     args = parser.parse_args()
 
     archive = Path(args.archive).resolve()
     target = Path(args.target).resolve()
+    expected_hash = str(args.sha256).lower().strip()
+    sidecar = archive.with_name(archive.name + ".sha256")
+    if not expected_hash and sidecar.is_file():
+        expected_hash = sidecar.read_text(encoding="ascii", errors="ignore").strip().split()[0]
+    if expected_hash and not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        raise ValueError("Некорректная контрольная сумма обновления.")
     if not archive.is_file():
         raise FileNotFoundError(archive)
+    # The launcher verifies the GitHub Release SHA-256 before hand-off. A sidecar
+    # allows newer helpers to repeat verification without breaking older installed
+    # FiercyUpdater.exe builds, whose command line does not know --sha256.
+    if expected_hash and sha256_file(archive) != expected_hash:
+        raise ValueError("SHA-256 архива не совпадает. Файлы приложения не изменены.")
+    if not target.is_dir() or target.is_symlink():
+        raise ValueError("Недопустимая папка установленного лаунчера.")
+    marker = "main.py" if args.mode == "source" else "FiercyLauncher.exe"
+    if not (target / marker).is_file():
+        raise ValueError("В целевой папке не найдено установленное приложение FiercyLauncher.")
     wait_for_process(args.parent_pid)
+    if expected_hash and sha256_file(archive) != expected_hash:
+        raise ValueError("Архив изменился во время ожидания закрытия лаунчера.")
 
     work = Path(tempfile.mkdtemp(prefix="fiercy-update-"))
     try:

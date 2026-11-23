@@ -74,3 +74,32 @@ class ProfileManagerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_minecraft_version_and_loader_are_immutable_after_creation():
+    with TemporaryDirectory() as temp:
+        manager = ProfileManager(temp)
+        profile = manager.create("Immutable", minecraft_version="1.21.1", loader="neoforge",
+                                 loader_version="21.1.267")
+        with __import__("pytest").raises(ProfileError):
+            manager.update(profile["id"], minecraft_version="1.21.4")
+        with __import__("pytest").raises(ProfileError):
+            manager.update(profile["id"], loader="fabric")
+        changed = manager.update(profile["id"], loader_version="21.1.268")
+        assert changed["minecraft_version"] == "1.21.1"
+        assert changed["loader"] == "neoforge"
+        assert changed["loader_version"] == "21.1.268"
+
+
+def test_corrupt_registry_is_backed_up_instead_of_overwritten():
+    with TemporaryDirectory() as temp:
+        root = Path(temp)
+        meta = root / ".fiercy"
+        meta.mkdir()
+        registry = meta / "profiles.json"
+        registry.write_text("{ this is not json", encoding="utf-8")
+        manager = ProfileManager(root)
+        assert manager.all() == []
+        backups = list(meta.glob("profiles.corrupt-*.json.bak"))
+        assert backups and backups[0].read_text("utf-8") == "{ this is not json"
+        assert registry.read_text("utf-8").startswith("{")

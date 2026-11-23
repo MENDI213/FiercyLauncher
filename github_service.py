@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import threading
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 from typing import Any
 
 import requests
@@ -17,6 +18,32 @@ from version import (GITHUB_API_LATEST, CONTENT_URL, NEWS_URL, VERSIONS_URL,
 from update_download import DownloadCancelled, download_verified_asset
 
 log = logging.getLogger("fiercy.github")
+
+
+def _allowed_github_host(host: str | None) -> bool:
+    host = (host or "").lower().rstrip(".")
+    return host in {"github.com", "api.github.com", "raw.githubusercontent.com"} or host.endswith(".githubusercontent.com")
+
+
+def _safe_github_get(url: str, *, allowed_hosts: set[str], **kwargs):
+    """Follow redirects only to explicitly allowed HTTPS GitHub hosts."""
+    current = str(url)
+    for _ in range(6):
+        parsed = urlsplit(current)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme != "https" or parsed.username or parsed.password or not (
+            host in allowed_hosts or host.endswith(".githubusercontent.com") or host.endswith(".github.io")
+        ):
+            raise ValueError("GitHub вернул небезопасный адрес перенаправления.")
+        response = requests.get(current, allow_redirects=False, **kwargs)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return response
+        location = response.headers.get("Location", "")
+        response.close()
+        if not location:
+            raise ValueError("GitHub вернул перенаправление без адреса.")
+        current = urljoin(current, location)
+    raise ValueError("Слишком много перенаправлений GitHub.")
 
 
 def _sha256_sums(text: str) -> dict[str, str]:
@@ -31,17 +58,31 @@ def _sha256_sums(text: str) -> dict[str, str]:
 def check_latest_release(release_url: str = GITHUB_API_LATEST,
                          timeout: tuple[int, int] = (5, 20)) -> dict[str, Any]:
     """Read the latest compatible GitHub Release and validate its asset metadata."""
-    if not release_url.startswith("https://api.github.com/"):
+    parsed_release_url = urlsplit(release_url)
+    if (parsed_release_url.scheme != "https" or parsed_release_url.hostname != "api.github.com"
+            or parsed_release_url.username or parsed_release_url.password):
         raise ValueError("Проверка обновлений должна идти через HTTPS GitHub API.")
     response = requests.get(
-        release_url, timeout=timeout,
+        release_url, timeout=timeout, allow_redirects=False,
         headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
     )
     if response.status_code == 404:
         return {"has_release": False, "update_available": False,
                 "current_version": LAUNCHER_VERSION}
     response.raise_for_status()
-    release = response.json()
+    payload = response.json()
+    if isinstance(payload, list):
+        # /releases includes prereleases; /releases/latest does not. This lets
+        # beta testers install a published prerelease without changing code.
+        candidates = [item for item in payload if isinstance(item, dict) and not item.get("draft")]
+        if not candidates:
+            return {"has_release": False, "update_available": False,
+                    "current_version": LAUNCHER_VERSION}
+        release = candidates[0]
+    elif isinstance(payload, dict):
+        release = payload
+    else:
+        raise ValueError("GitHub API вернул неожиданный формат релизов.")
     remote = str(release.get("tag_name", "")).strip().lstrip("vV")
     if not remote:
         raise ValueError("В последнем GitHub Release отсутствует tag_name.")
@@ -77,8 +118,10 @@ def check_latest_release(release_url: str = GITHUB_API_LATEST,
             sums_url = str(sums_asset.get("browser_download_url", ""))
             if not sums_url.startswith("https://github.com/"):
                 raise ValueError("GitHub вернул неправильную ссылку SHA256SUMS.txt.")
-            sums_response = requests.get(sums_url, timeout=(5, 20),
-                                         headers={"User-Agent": USER_AGENT})
+            sums_response = _safe_github_get(
+                sums_url, allowed_hosts={"github.com"}, timeout=(5, 20),
+                headers={"User-Agent": USER_AGENT},
+            )
             sums_response.raise_for_status()
             expected = _sha256_sums(sums_response.text).get(asset_name, "")
     if not re.fullmatch(r"[0-9a-f]{64}", expected):
@@ -165,12 +208,24 @@ class StaticContentWorker(QThread):
         try:
             result: dict[str, Any] = {}
             for key, url in (("launcher", CONTENT_URL), ("news", NEWS_URL), ("versions", VERSIONS_URL)):
-                response = requests.get(url, timeout=(5, 15), headers={"User-Agent": USER_AGENT})
+                response = _safe_github_get(
+                    url, allowed_hosts={"raw.githubusercontent.com"}, timeout=(5, 15),
+                    headers={"User-Agent": USER_AGENT}, stream=True,
+                )
                 if response.status_code == 404:
                     log.info("Статический файл GitHub пока не опубликован: %s", url)
                     continue
                 response.raise_for_status()
-                parsed = response.json()
+                declared_size = int(response.headers.get("Content-Length", "0") or 0)
+                if declared_size > 1024 * 1024:
+                    raise ValueError(f"Статический JSON {key} превышает лимит 1 МБ.")
+                body = bytearray()
+                for chunk in response.iter_content(64 * 1024):
+                    if chunk:
+                        body.extend(chunk)
+                        if len(body) > 1024 * 1024:
+                            raise ValueError(f"Статический JSON {key} превышает лимит 1 МБ.")
+                parsed = json.loads(body.decode("utf-8-sig"))
                 if not isinstance(parsed, dict):
                     raise ValueError(f"JSON {key} должен содержать объект верхнего уровня.")
                 result[key] = parsed
@@ -196,8 +251,10 @@ class RemoteImageWorker(QThread):
 
     def run(self) -> None:
         try:
-            with requests.get(self.url, stream=True, timeout=(5, 20),
-                              headers={"User-Agent": USER_AGENT}) as response:
+            with _safe_github_get(
+                self.url, allowed_hosts={"raw.githubusercontent.com", "github.com"},
+                stream=True, timeout=(5, 20), headers={"User-Agent": USER_AGENT},
+            ) as response:
                 response.raise_for_status()
                 final_url = urlsplit(str(response.url))
                 final_host = (final_url.hostname or "").lower()

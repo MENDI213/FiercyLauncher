@@ -17,17 +17,31 @@ import minecraft_launcher_lib as mll
 from minecraft_service import _callback, resolve_java, install_neoforge_profile
 from mod_service import _download_verified, _safe_filename
 from version import USER_AGENT
+from secure_archive import validate_zip, normalise_member_name
 
 log = logging.getLogger("fiercy.modpack")
 
 
 def _safe_member_path(base: Path, relative: str) -> Path:
-    pure = PurePosixPath(str(relative).replace("\\", "/"))
-    if pure.is_absolute() or ".." in pure.parts or (pure.parts and ":" in pure.parts[0]):
-        raise ValueError(f"В модпаке найден небезопасный путь: {relative}")
-    target = (base / Path(*pure.parts)).resolve()
-    root = base.resolve()
-    if target != root and root not in target.parents:
+    normal, is_dir = normalise_member_name(str(relative))
+    if is_dir:
+        raise ValueError(f"Ожидался путь файла, получен каталог: {relative}")
+    pure = PurePosixPath(normal)
+    root = base.expanduser().resolve()
+    target = root.joinpath(*pure.parts)
+    cursor = root
+    for part in pure.parts[:-1]:
+        cursor = cursor / part
+        is_junction = getattr(cursor, "is_junction", lambda: False)()
+        if cursor.exists() and (cursor.is_symlink() or is_junction):
+            raise ValueError(f"Путь модпака проходит через ссылку или junction: {relative}")
+    is_junction = getattr(target, "is_junction", lambda: False)()
+    if target.exists() and (target.is_symlink() or is_junction):
+        raise ValueError(f"Нельзя перезаписывать ссылку или junction: {relative}")
+    if target.exists() and target.is_file() and getattr(target.stat(), "st_nlink", 1) > 1:
+        raise ValueError(f"Нельзя перезаписывать файл с жёсткими ссылками: {relative}")
+    resolved = target.resolve()
+    if resolved != root and root not in resolved.parents:
         raise ValueError(f"Файл модпака выходит за пределы профиля: {relative}")
     return target
 
@@ -35,10 +49,28 @@ def _safe_member_path(base: Path, relative: str) -> Path:
 def inspect_modpack(archive_path: str | Path) -> dict:
     path = Path(archive_path)
     with zipfile.ZipFile(path, "r") as archive:
-        names = set(archive.namelist())
+        validate_zip(archive, max_archive_size=1024**3, max_total_size=4 * 1024**3,
+                     max_file_size=1024**3, max_entries=100_000)
+        names = {item.filename.replace("\\", "/").lstrip("/") for item in archive.infolist()}
         if "modrinth.index.json" in names:
             index = json.loads(archive.read("modrinth.index.json").decode("utf-8"))
+            if not isinstance(index, dict) or index.get("formatVersion") != 1:
+                raise ValueError("Неподдерживаемый формат modrinth.index.json")
             deps = index.get("dependencies", {})
+            if not isinstance(deps, dict) or not isinstance(index.get("files", []), list):
+                raise ValueError("Манифест Modrinth имеет неверную структуру.")
+            if len(index.get("files", [])) > 50_000:
+                raise ValueError("В сборке Modrinth слишком много файлов.")
+            for entry in index.get("files", []):
+                if not isinstance(entry, dict):
+                    raise ValueError("Элемент списка файлов Modrinth имеет неверный формат.")
+                normalise_member_name(str(entry.get("path", "")))
+                hashes = entry.get("hashes")
+                downloads = entry.get("downloads")
+                if not isinstance(hashes, dict) or not any(hashes.get(key) for key in ("sha512", "sha1", "sha256")):
+                    raise ValueError("В манифесте Modrinth для файла отсутствует контрольная сумма.")
+                if not isinstance(downloads, list) or any(not isinstance(link, str) for link in downloads):
+                    raise ValueError("Список ссылок Modrinth имеет неверный формат.")
             loader_id, loader_version = "vanilla", ""
             for dependency_name, dependency_version in deps.items():
                 key = str(dependency_name).lower()
@@ -55,7 +87,11 @@ def inspect_modpack(archive_path: str | Path) -> dict:
                     "loader": loader_id, "loader_version": loader_version}
         if "manifest.json" in names:
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("files", []), list):
+                raise ValueError("Манифест CurseForge имеет неверную структуру.")
             mc = manifest.get("minecraft", {})
+            if not isinstance(mc, dict) or len(manifest.get("files", [])) > 50_000:
+                raise ValueError("Манифест CurseForge имеет неверную структуру.")
             loader_id, loader_version = "vanilla", ""
             for item in mc.get("modLoaders", []):
                 loader_string = str(item.get("id", ""))
@@ -194,5 +230,17 @@ class ModpackImportWorker(QThread):
             if info.file_size > 1024 * 1024 * 1024:
                 raise ValueError(f"Файл в overrides слишком большой: {relative}")
             target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info, "r") as source, target.open("wb") as output:
-                shutil.copyfileobj(source, output, length=1024 * 1024)
+            fd, temp_name = tempfile.mkstemp(prefix=".fiercy-override-", suffix=".part", dir=str(target.parent))
+            temp_target = Path(temp_name)
+            try:
+                with archive.open(info, "r") as source, os.fdopen(fd, "wb") as output:
+                    fd = -1
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                os.replace(temp_target, target)
+            finally:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                temp_target.unlink(missing_ok=True)

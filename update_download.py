@@ -17,7 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 
 import requests
 
@@ -50,10 +50,34 @@ def _notify(callback: ProgressCallback | None, done: int, total: int,
         log.debug("Update progress callback failed", exc_info=True)
 
 
+def _allowed_github_host(host: str | None) -> bool:
+    host = (host or "").lower().rstrip(".")
+    return host in {"github.com", "api.github.com"} or host.endswith(".githubusercontent.com")
+
+
 def _check_url(url: str) -> None:
     parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname not in {"github.com", "api.github.com"}:
-        raise ValueError("Ссылка обновления должна вести на GitHub по HTTPS.")
+    if (parsed.scheme != "https" or not _allowed_github_host(parsed.hostname)
+            or parsed.username or parsed.password):
+        raise ValueError("Ссылка обновления должна вести на GitHub или его CDN по HTTPS.")
+
+
+def _safe_get(url: str, **kwargs):
+    """Follow only HTTPS redirects to GitHub-owned download hosts."""
+    current = url
+    for _ in range(6):
+        _check_url(current)
+        response = requests.get(current, allow_redirects=False, **kwargs)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return response
+        location = response.headers.get("Location")
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+        if not location:
+            raise ValueError("GitHub вернул перенаправление без адреса.")
+        current = urljoin(current, location)
+    raise ValueError("Слишком много перенаправлений при загрузке обновления.")
 
 
 def _probe_ranges(url: str, timeout: tuple[int, int]) -> tuple[bool, int]:
@@ -62,10 +86,8 @@ def _probe_ranges(url: str, timeout: tuple[int, int]) -> tuple[bool, int]:
         "Accept-Encoding": "identity",
         "Range": "bytes=0-0",
     }
-    with requests.get(url, headers=headers, timeout=timeout, stream=True,
-                      allow_redirects=True) as response:
-        if urlsplit(response.url).scheme != "https":
-            raise ValueError("Сервер обновлений перенаправил загрузку на небезопасный адрес.")
+    with _safe_get(url, headers=headers, timeout=timeout, stream=True) as response:
+        _check_url(response.url)
         if response.status_code != 206:
             return False, int(response.headers.get("Content-Length", 0) or 0)
         match = re.fullmatch(r"bytes\s+0-0/(\d+)", response.headers.get("Content-Range", "").strip(), re.I)
@@ -83,11 +105,9 @@ def _download_single(url: str, temporary: Path, expected_size: int,
         done = 0
         try:
             headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
-            with requests.get(url, stream=True, timeout=timeout, headers=headers,
-                              allow_redirects=True) as response:
+            with _safe_get(url, stream=True, timeout=timeout, headers=headers) as response:
                 response.raise_for_status()
-                if urlsplit(response.url).scheme != "https":
-                    raise ValueError("Сервер обновлений перенаправил загрузку на небезопасный адрес.")
+                _check_url(response.url)
                 response_size = int(response.headers.get("Content-Length", 0) or 0)
                 total = expected_size or response_size
                 with temporary.open("wb") as output:
@@ -138,6 +158,10 @@ def download_verified_asset(
     destination = Path(target)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file() and sha256_file(destination) == expected_sha256:
+        sidecar = destination.with_name(destination.name + ".sha256")
+        sidecar_tmp = sidecar.with_suffix(sidecar.suffix + ".new")
+        sidecar_tmp.write_text(expected_sha256 + "\n", encoding="ascii")
+        os.replace(sidecar_tmp, sidecar)
         size = destination.stat().st_size
         _notify(progress, size, size, time.monotonic(), f"Проверенный кеш: {destination.name}")
         return destination
@@ -193,13 +217,11 @@ def download_verified_asset(
                             "Accept-Encoding": "identity",
                             "Range": f"bytes={start}-{end}",
                         }
-                        with requests.get(url, headers=headers, stream=True, timeout=timeout,
-                                          allow_redirects=True) as response:
+                        with _safe_get(url, headers=headers, stream=True, timeout=timeout) as response:
                             response.raise_for_status()
                             if response.status_code != 206:
                                 raise IOError(f"Range-запрос вернул HTTP {response.status_code}, ожидался 206.")
-                            if urlsplit(response.url).scheme != "https":
-                                raise ValueError("Небезопасное перенаправление при загрузке обновления.")
+                            _check_url(response.url)
                             expected_header = f"bytes {start}-{end}/{total}"
                             if response.headers.get("Content-Range", "").strip().lower() != expected_header.lower():
                                 raise IOError("CDN вернул неправильный Content-Range для части архива.")
@@ -265,6 +287,10 @@ def download_verified_asset(
         if actual != expected_sha256:
             raise ValueError("SHA-256 не совпал. Архив обновления удалён, текущая версия не изменена.")
         os.replace(temporary, destination)
+        sidecar = destination.with_name(destination.name + ".sha256")
+        sidecar_tmp = sidecar.with_suffix(sidecar.suffix + ".new")
+        sidecar_tmp.write_text(expected_sha256 + "\n", encoding="ascii")
+        os.replace(sidecar_tmp, sidecar)
         size = destination.stat().st_size
         _notify(progress, size, size, started, f"Загрузка завершена: {destination.name}")
         return destination

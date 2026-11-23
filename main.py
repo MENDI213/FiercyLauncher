@@ -345,6 +345,9 @@ class Application:
 
 def main() -> int:
     configure_logging()
+    # Qt 5 high-DPI support must be enabled before QApplication is created.
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setApplicationName(LAUNCHER_NAME)
     app.setOrganizationName("Fiercy")

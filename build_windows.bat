@@ -1,13 +1,22 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if not exist ".venv\Scripts\python.exe" py -3.14 -m venv .venv
-if errorlevel 1 goto :error
+if exist ".venv\Scripts\python.exe" (
+  .venv\Scripts\python.exe -c "import sys; raise SystemExit(0 if (3,11) <= sys.version_info[:2] < (3,14) else 1)"
+  if errorlevel 1 (
+    echo Existing .venv uses an unsupported Python version. Recreating it with Python 3.12...
+    rmdir /s /q .venv
+  )
+)
+if not exist ".venv\Scripts\python.exe" py -3.12 -m venv .venv
+if errorlevel 1 goto :python_missing
 .venv\Scripts\python.exe -m pip install --upgrade pip
 if errorlevel 1 goto :error
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 if errorlevel 1 goto :error
 
+echo Using build environment:
+.venv\Scripts\python.exe --version
 echo [1/4] Building main onedir application...
 .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean launcher.spec
 if errorlevel 1 goto :error
@@ -35,6 +44,11 @@ echo Build complete. EXE: dist\FiercyLauncher\FiercyLauncher.exe
 echo Release ZIP files: release_assets\
 pause
 exit /b 0
+:python_missing
+echo.
+echo Python 3.12 was not found. Install Python 3.12 x64 with the py launcher enabled.
+pause
+exit /b 1
 :error
 echo.
 echo Build failed. Read the error above.

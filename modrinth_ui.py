@@ -141,7 +141,7 @@ class ModrinthCatalogWidget(QWidget):
         self.scroll.setFrameShape(QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll.setMinimumHeight(520)
+        self.scroll.setMinimumHeight(240)
         self.scroll.setMaximumHeight(16777215)
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.content = QWidget()

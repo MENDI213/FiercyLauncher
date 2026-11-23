@@ -17,6 +17,7 @@ import platform
 import tempfile
 import zipfile
 import time
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -35,6 +36,10 @@ from neoforge_support import (
 )
 
 log = logging.getLogger("fiercy.minecraft")
+
+_LOADER_VERSION_CACHE: dict[tuple[str, str], tuple[float, list[str]]] = {}
+_LOADER_VERSION_CACHE_LOCK = threading.Lock()
+_LOADER_VERSION_CACHE_TTL = 600.0
 
 
 def _callback(worker: QThread):
@@ -627,6 +632,13 @@ class LoaderVersionListWorker(QThread):
             if self.loader_id == "vanilla":
                 self.loaded.emit(self.loader_id, self.minecraft_version, [])
                 return
+            cache_key = (self.loader_id, self.minecraft_version)
+            now = time.monotonic()
+            with _LOADER_VERSION_CACHE_LOCK:
+                cached = _LOADER_VERSION_CACHE.get(cache_key)
+                if cached and now - cached[0] < _LOADER_VERSION_CACHE_TTL:
+                    self.loaded.emit(self.loader_id, self.minecraft_version, list(cached[1]))
+                    return
             if self.loader_id == "neoforge":
                 # NeoForge uses two Maven coordinate families: 1.20.1 is
                 # net.neoforged:forge, while 1.20.2+ and modern 26.x versions
@@ -636,7 +648,7 @@ class LoaderVersionListWorker(QThread):
                     f"https://maven.neoforged.net/releases/net/neoforged/{artifact_id}/maven-metadata.xml"
                 )
                 metadata = requests.get(
-                    metadata_url, timeout=(20, 60), headers={"User-Agent": LAUNCHER_NAME},
+                    metadata_url, timeout=(8, 25), headers={"User-Agent": LAUNCHER_NAME},
                 )
                 metadata.raise_for_status()
                 root = ET.fromstring(metadata.content)
@@ -649,6 +661,8 @@ class LoaderVersionListWorker(QThread):
                 except TypeError:
                     versions = loader.get_loader_versions(self.minecraft_version)
                 cleaned = [str(version) for version in (versions or []) if str(version).strip()]
+            with _LOADER_VERSION_CACHE_LOCK:
+                _LOADER_VERSION_CACHE[cache_key] = (time.monotonic(), list(cleaned))
             self.loaded.emit(self.loader_id, self.minecraft_version, cleaned)
         except Exception as exc:
             log.exception("Не удалось загрузить версии загрузчика %s для Minecraft %s",

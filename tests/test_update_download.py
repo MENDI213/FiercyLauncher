@@ -60,6 +60,7 @@ def test_parallel_range_download_and_sha256(monkeypatch, tmp_path: Path):
     )
     assert result == target
     assert target.read_bytes() == payload
+    assert (tmp_path / "release.zip.sha256").read_text("ascii").strip() == hashlib.sha256(payload).hexdigest()
 
 
 def test_non_range_server_falls_back_to_single_stream(monkeypatch, tmp_path: Path):
@@ -105,3 +106,27 @@ def test_invalid_hash_does_not_replace_destination(monkeypatch, tmp_path: Path):
     else:
         raise AssertionError("Invalid SHA-256 should fail")
     assert not target.exists()
+
+
+def test_update_redirect_to_untrusted_host_is_rejected(monkeypatch):
+    calls = []
+
+    class RedirectResponse(FakeResponse):
+        def __init__(self):
+            super().__init__(b"", 302, {"Location": "https://example.invalid/payload.zip"},
+                             "https://github.com/MENDI213/FiercyLauncher/releases/download/a.zip")
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        return RedirectResponse()
+
+    monkeypatch.setattr(update_download.requests, "get", fake_get)
+    try:
+        update_download._safe_get(
+            "https://github.com/MENDI213/FiercyLauncher/releases/download/a.zip", timeout=(1, 1)
+        )
+    except ValueError as exc:
+        assert "GitHub" in str(exc)
+    else:
+        raise AssertionError("Untrusted redirect must be rejected")
+    assert len(calls) == 1

@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 
 import requests
 from update_download import download_verified_asset
+from secure_archive import validate_zip, safe_extract_zip
+from github_service import _safe_github_get
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout,
@@ -27,19 +29,13 @@ USER_AGENT = "FiercySetup/1.0"
 
 
 def _safe_extract(zip_path: Path, output: Path) -> None:
-    root = output.resolve()
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as archive:
-        items = archive.infolist()
-        if len(items) > 100_000 or sum(item.file_size for item in items) > 2 * 1024**3:
-            raise ValueError("Архив слишком большой или содержит слишком много файлов.")
-        for item in items:
-            pure = PurePosixPath(item.filename.replace("\\", "/"))
-            if pure.is_absolute() or ".." in pure.parts or (pure.parts and ":" in pure.parts[0]):
-                raise ValueError(f"Небезопасный путь в архиве: {item.filename}")
-            destination = (output / Path(*pure.parts)).resolve()
-            if destination != root and root not in destination.parents:
-                raise ValueError(f"Архив выходит за пределы папки установки: {item.filename}")
-        archive.extractall(output)
+        validate_zip(archive, max_archive_size=2 * 1024**3,
+                     max_total_size=2 * 1024**3, max_file_size=1024**3,
+                     max_entries=100_000, max_ratio=2000)
+        safe_extract_zip(archive, output, max_total_size=2 * 1024**3)
 
 
 def _desktop_directory() -> Path:
@@ -106,7 +102,9 @@ class InstallWorker(QThread):
         try:
             headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"}
             self.progress.emit(5, "Получение последнего релиза GitHub…")
-            response = requests.get(API_LATEST, timeout=(8, 30), headers=headers)
+            response = _safe_github_get(
+                API_LATEST, allowed_hosts={"api.github.com"}, timeout=(8, 30), headers=headers,
+            )
             response.raise_for_status()
             release = response.json()
             assets = release.get("assets", [])
@@ -116,7 +114,10 @@ class InstallWorker(QThread):
                 raise RuntimeError("В последнем GitHub Release отсутствует FiercyLauncher-win64.zip или SHA256SUMS.txt.")
 
             self.progress.emit(12, "Проверка контрольной суммы релиза…")
-            sums_response = requests.get(sums_asset["browser_download_url"], timeout=(8, 30), headers=headers)
+            sums_response = _safe_github_get(
+                sums_asset["browser_download_url"], allowed_hosts={"github.com"},
+                timeout=(8, 30), headers=headers,
+            )
             sums_response.raise_for_status()
             expected = ""
             for line in sums_response.text.splitlines():
@@ -198,10 +199,25 @@ class InstallWorker(QThread):
                 dirs[:] = [d for d in dirs if d not in {"instances", "versions", "libraries", "runtime", "logs", "updates", ".fiercy"}]
                 target_dir = target / relative
                 target_dir.mkdir(parents=True, exist_ok=True)
+                resolved_dir = target_dir.resolve()
+                if resolved_dir != target and target not in resolved_dir.parents:
+                    raise ValueError(f"Каталог установки выходит за пределы выбранной папки: {target_dir}")
+                if target_dir.is_symlink() or getattr(target_dir, "is_junction", lambda: False)():
+                    raise ValueError(f"Каталог установки является ссылкой: {target_dir}")
                 for filename in files:
                     source = current_path / filename
+                    if source.is_symlink() or not source.is_file():
+                        raise ValueError(f"В пакете обнаружен небезопасный файл: {source}")
                     destination = target_dir / filename
-                    shutil.copy2(source, destination)
+                    if destination.is_symlink() or getattr(destination, "is_junction", lambda: False)():
+                        raise ValueError(f"Нельзя перезаписывать ссылку: {destination}")
+                    if destination.exists() and destination.is_file() and getattr(destination.stat(), "st_nlink", 1) > 1:
+                        raise ValueError(f"Нельзя перезаписывать файл с жёсткими ссылками: {destination}")
+                    temp_file = target_dir / ("." + filename + ".fiercy-new")
+                    if temp_file.exists() or temp_file.is_symlink():
+                        temp_file.unlink(missing_ok=True)
+                    shutil.copy2(source, temp_file)
+                    os.replace(temp_file, destination)
             executable = target / "FiercyLauncher.exe"
             if not executable.is_file():
                 raise RuntimeError("После установки не найден FiercyLauncher.exe.")

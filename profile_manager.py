@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("fiercy.profiles")
 
 
 class ProfileError(RuntimeError):
@@ -62,15 +65,29 @@ class ProfileManager:
                 if is_legacy_placeholder:
                     continue
                 self._profiles.append(profile)
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as exc:
+            # Не затираем повреждённый реестр пустым файлом: бета-тестировщик
+            # должен иметь возможность восстановить список своих сборок.
             self._profiles = []
+            if self.registry.exists():
+                try:
+                    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    backup = self.registry.with_name(f"profiles.corrupt-{stamp}.json.bak")
+                    self.registry.replace(backup)
+                    log.error("Повреждённый реестр профилей сохранён в %s: %s", backup, exc)
+                except OSError:
+                    log.exception("Не удалось сохранить резервную копию повреждённого реестра профилей")
         # Профили — необязательные сборки. Обычный Minecraft хранится в корне
         # game_root и не требует скрытого/автоматически созданного профиля.
         self._save()
 
     def _save(self) -> None:
+        self.metadata_dir.mkdir(parents=True, exist_ok=True)
         temp = self.registry.with_suffix(".tmp")
-        temp.write_text(json.dumps({"schema": 1, "profiles": self._profiles}, ensure_ascii=False, indent=2), "utf-8")
+        payload = json.dumps({"schema": 1, "profiles": self._profiles}, ensure_ascii=False, indent=2)
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
         temp.replace(self.registry)
 
     @staticmethod
@@ -93,7 +110,15 @@ class ProfileManager:
                modpack_source: str = "", modpack_name: str = "") -> dict[str, Any]:
         name = " ".join(name.split()).strip()[:48]
         if not name:
-            raise ProfileError("Укажи название профиля")
+            raise ProfileError("Укажи название сборки")
+        if len(name) > 48:
+            raise ProfileError("Название сборки слишком длинное")
+        minecraft_version = str(minecraft_version or "").strip()
+        loader_version = str(loader_version or "").strip()
+        if len(minecraft_version) > 64 or (minecraft_version and not re.fullmatch(r"[A-Za-z0-9._+-]+", minecraft_version)):
+            raise ProfileError("Укажи корректную версию Minecraft")
+        if len(loader_version) > 80 or (loader_version and not re.fullmatch(r"[A-Za-z0-9._+-]+", loader_version)):
+            raise ProfileError("Некорректная версия загрузчика")
         if any(p["name"].casefold() == name.casefold() for p in self._profiles):
             raise ProfileError("Профиль с таким названием уже существует")
         if storage_root not in ("shared", "legacy"):
@@ -124,10 +149,20 @@ class ProfileManager:
         return dict(profile)
 
     def update(self, profile_id: str, **fields: Any) -> dict[str, Any]:
-        allowed = {"name", "minecraft_version", "loader", "loader_version", "installed_version_id",
-                   "description", "kind", "storage_root", "modpack_source", "modpack_name"}
+        # Версия Minecraft и тип загрузчика задаются один раз при создании
+        # сборки. После создания пользователь может менять только версию
+        # выбранного загрузчика, имя и служебные метаданные.
+        immutable = {"minecraft_version", "loader"}
+        allowed = {"name", "loader_version", "installed_version_id", "description",
+                   "kind", "storage_root", "modpack_source", "modpack_name"}
         for profile in self._profiles:
             if profile["id"] == profile_id:
+                for key in immutable:
+                    if key in fields and str(fields[key]) != str(profile.get(key, "")):
+                        raise ProfileError(
+                            "Версию Minecraft и загрузчик нельзя изменить после создания сборки. "
+                            "Создай новую сборку с нужными параметрами."
+                        )
                 if "name" in fields:
                     new_name = " ".join(str(fields["name"]).split()).strip()[:48]
                     if not new_name:
@@ -138,8 +173,11 @@ class ProfileManager:
                     fields["name"] = new_name
                 if "storage_root" in fields and str(fields["storage_root"]) not in ("shared", "legacy"):
                     raise ProfileError("Неизвестный тип хранилища профиля")
-                if "loader" in fields and str(fields["loader"]) not in ("vanilla", "forge", "neoforge", "fabric", "quilt"):
-                    raise ProfileError("Неизвестный загрузчик Minecraft")
+                if "loader_version" in fields:
+                    loader_version = str(fields["loader_version"] or "").strip()
+                    if len(loader_version) > 80 or (loader_version and not re.fullmatch(r"[A-Za-z0-9._+-]+", loader_version)):
+                        raise ProfileError("Некорректная версия загрузчика")
+                    fields["loader_version"] = loader_version
                 for key, value in fields.items():
                     if key in allowed:
                         profile[key] = str(value)
