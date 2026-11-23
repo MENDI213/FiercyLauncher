@@ -14,10 +14,11 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 import requests
+from update_download import download_verified_asset
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout,
-    QHBoxLayout, QProgressBar, QFileDialog, QCheckBox,
+    QHBoxLayout, QProgressBar, QFileDialog, QCheckBox, QFrame,
 )
 
 REPOSITORY = "MENDI213/FiercyLauncher"
@@ -145,26 +146,35 @@ class InstallWorker(QThread):
                 self.progress.emit(72, "Используем проверенный архив последней версии из кеша…")
             else:
                 archive_path.unlink(missing_ok=True)
-                temporary_archive = temp_root / package["name"]
-                self.progress.emit(18, "Загрузка FiercyLauncher…")
-                digest = hashlib.sha256()
+                self.progress.emit(18, "Подключение к GitHub CDN и проверка быстрой загрузки…")
                 total = int(package.get("size", 0) or 0)
-                downloaded = 0
-                with requests.get(package["browser_download_url"], stream=True, timeout=(10, 90), headers=headers) as stream:
-                    stream.raise_for_status()
-                    with temporary_archive.open("wb") as output:
-                        for chunk in stream.iter_content(512 * 1024):
-                            if not chunk:
-                                continue
-                            output.write(chunk)
-                            digest.update(chunk)
-                            downloaded += len(chunk)
-                            percent = 18 + int(54 * downloaded / total) if total else 50
-                            self.progress.emit(percent, f"Загрузка: {downloaded / 1048576:.1f} МБ / {max(total, 1) / 1048576:.1f} МБ")
-                if digest.hexdigest() != expected:
-                    raise RuntimeError("SHA-256 не совпал. Загрузка отклонена, файлы не установлены.")
-                shutil.copy2(temporary_archive, archive_path.with_suffix(archive_path.suffix + ".tmp"))
-                os.replace(archive_path.with_suffix(archive_path.suffix + ".tmp"), archive_path)
+
+                def report_download(done: int, total_bytes: int, speed: float, detail: str):
+                    effective_total = total_bytes or total
+                    percent = 18 + int(54 * done / effective_total) if effective_total else 50
+                    speed_mb = speed / 1048576
+                    size_text = (
+                        f"{done / 1048576:.1f} / {effective_total / 1048576:.1f} МБ"
+                        if effective_total else f"{done / 1048576:.1f} МБ"
+                    )
+                    is_parallel = "Быстрая" in detail
+                    mode = "Параллельная загрузка" if is_parallel else "Загрузка"
+                    streams = "8 потоков" if is_parallel else "1 поток"
+                    self.progress.emit(
+                        min(72, max(18, percent)),
+                        f"{mode}: {size_text} · {speed_mb:.2f} МБ/с · {streams}",
+                    )
+
+                # Используем ту же проверенную загрузку с HTTP Range, что и автообновление.
+                # Если CDN не поддерживает Range, модуль сам переключится на обычный поток.
+                download_verified_asset(
+                    str(package["browser_download_url"]),
+                    expected,
+                    archive_path,
+                    expected_size=total,
+                    progress=report_download,
+                    max_workers=8,
+                )
             # Не копим бесконечное число версий установщика: сохраняем текущий и два предыдущих архива.
             cached = sorted(cache_root.glob("*.zip"), key=lambda item: item.stat().st_mtime, reverse=True)
             for stale in cached[3:]:
@@ -219,16 +229,23 @@ class SetupWindow(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Установка FiercyLauncher")
-        self.setFixedSize(560, 340)
+        self.setFixedSize(600, 390)
         self.setStyleSheet("""
             QDialog { background:#0b1020; color:#f4f6ff; border:1px solid #2c3a58; border-radius:18px; }
             QLabel { color:#f4f6ff; font-family:'Segoe UI'; }
             QLabel#Title { font-size:20pt; font-weight:900; }
-            QLabel#Muted { color:#96a5c2; }
-            QLineEdit { background:#111b30; border:1px solid #30415f; border-radius:9px; padding:10px; color:#fff; }
-            QPushButton { background:#182641; border:1px solid #344966; border-radius:9px; color:#fff; padding:9px 14px; font-weight:700; }
+            QLabel#Muted { color:#aebbd2; font-size:9pt; }
+            QLabel#ShortcutHint { color:#bdc9de; font-size:9pt; padding-left:39px; }
+            QLineEdit { background:#111b30; border:1px solid #30415f; border-radius:9px; padding:10px; color:#fff; font-size:10pt; }
+            QPushButton { background:#182641; border:1px solid #344966; border-radius:9px; color:#fff; padding:10px 15px; font-size:10pt; font-weight:700; }
             QPushButton#Primary { background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #884dff,stop:1 #19bfcf); border:0; }
-            QProgressBar { background:#10192a; border:1px solid #30415f; border-radius:7px; height:13px; text-align:center; color:transparent; }
+            QFrame#ShortcutCard { background:#17243a; border:1px solid #4b6387; border-radius:12px; }
+            QCheckBox { color:#ffffff; font-family:'Segoe UI'; font-size:12pt; font-weight:800; spacing:12px; padding:10px 12px 4px 12px; }
+            QCheckBox::indicator { width:23px; height:23px; }
+            QCheckBox::indicator:unchecked { background:#0c1527; border:2px solid #c1cde0; border-radius:5px; }
+            QCheckBox::indicator:checked { background:#19bfcf; border:2px solid #19bfcf; border-radius:5px; }
+            QCheckBox::indicator:hover { border:2px solid #ffffff; }
+            QProgressBar { background:#10192a; border:1px solid #30415f; border-radius:7px; height:15px; text-align:center; color:transparent; }
             QProgressBar::chunk { background:#8e5bff; border-radius:6px; }
         """)
         layout = QVBoxLayout(self)
@@ -248,10 +265,21 @@ class SetupWindow(QDialog):
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(browse)
         layout.addLayout(path_row)
-        self.desktop_shortcut_check = QCheckBox("Создать ярлык FiercyLauncher на рабочем столе")
+        shortcut_card = QFrame()
+        shortcut_card.setObjectName("ShortcutCard")
+        shortcut_layout = QVBoxLayout(shortcut_card)
+        shortcut_layout.setContentsMargins(8, 7, 8, 9)
+        shortcut_layout.setSpacing(2)
+        self.desktop_shortcut_check = QCheckBox("Создать ярлык на рабочем столе")
         self.desktop_shortcut_check.setChecked(True)
+        self.desktop_shortcut_check.setCursor(Qt.PointingHandCursor)
         self.desktop_shortcut_check.setToolTip("Сними галочку, если ярлык на рабочем столе не нужен.")
-        layout.addWidget(self.desktop_shortcut_check)
+        shortcut_hint = QLabel("На рабочем столе появится значок для быстрого запуска FiercyLauncher.")
+        shortcut_hint.setObjectName("ShortcutHint")
+        shortcut_hint.setWordWrap(True)
+        shortcut_layout.addWidget(self.desktop_shortcut_check)
+        shortcut_layout.addWidget(shortcut_hint)
+        layout.addWidget(shortcut_card)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
