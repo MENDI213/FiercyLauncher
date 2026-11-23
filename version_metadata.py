@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 _LOADER_PATTERNS = (
-    ("neoforge", re.compile(r"neoforge[-_](\d+(?:\.\d+)+)", re.IGNORECASE)),
+    ("neoforge", re.compile(r"neoforge[-_](?:1\.20\.1-)?(\d+(?:\.\d+)+)", re.IGNORECASE)),
     ("forge", re.compile(r"forge[-_](\d+(?:\.\d+)+)", re.IGNORECASE)),
     ("fabric", re.compile(r"fabric-loader[-_](\d+(?:\.\d+)+)", re.IGNORECASE)),
     ("quilt", re.compile(r"quilt-loader[-_](\d+(?:\.\d+)+)", re.IGNORECASE)),

@@ -14,7 +14,7 @@ import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 import minecraft_launcher_lib as mll
 
-from minecraft_service import _callback, resolve_java, install_neoforge_client
+from minecraft_service import _callback, resolve_java, install_neoforge_profile
 from mod_service import _download_verified, _safe_filename
 from version import USER_AGENT
 
@@ -102,9 +102,10 @@ class ModpackImportWorker(QThread):
             if metadata["loader"] != "vanilla":
                 self.progress.emit(45, f"Установка {metadata['loader'].title()}…")
                 if metadata["loader"] == "neoforge":
-                    installed_id = install_neoforge_client(
-                        metadata["minecraft_version"], metadata["loader_version"], self.game_root, java,
-                        lambda message: self.progress.emit(45, message),
+                    installed_id = install_neoforge_profile(
+                        metadata["minecraft_version"], metadata["loader_version"],
+                        self.game_root, java, callback=callback,
+                        progress=lambda message: self.progress.emit(45, message),
                     )
                 else:
                     loader = mll.mod_loader.get_mod_loader(metadata["loader"])
