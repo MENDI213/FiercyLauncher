@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtWidgets import QScroller
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
@@ -111,7 +112,7 @@ class ModrinthProjectCard(QFrame):
     def set_icon_bytes(self, payload: bytes):
         pixmap = QPixmap()
         if payload and pixmap.loadFromData(payload):
-            self.icon.setPixmap(pixmap.scaled(48, 48, Qt.KeepAspectRatioByExpanding, Qt.FastTransformation))
+            self.icon.setPixmap(pixmap.scaled(48, 48, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
             self.icon.setText("")
 
     def mouseReleaseEvent(self, event):
@@ -141,7 +142,12 @@ class ModrinthCatalogWidget(QWidget):
         self.scroll.setFrameShape(QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll.setMinimumHeight(240)
+        self.scroll.setMinimumHeight(420)
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.scroll.verticalScrollBar().setSingleStep(22)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._check_auto_load)
+        # Кинетическая прокрутка делает длинный каталог заметно плавнее на тачпаде и мыши.
+        QScroller.grabGesture(self.scroll.viewport(), QScroller.TouchGesture)
         self.scroll.setMaximumHeight(16777215)
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.content = QWidget()
@@ -158,11 +164,11 @@ class ModrinthCatalogWidget(QWidget):
         self.count_label = QLabel("Популярные проекты Modrinth")
         self.count_label.setObjectName("Muted")
         footer.addWidget(self.count_label, 1)
-        self.load_more_button = QPushButton("Показать ещё")
+        self.load_more_button = QPushButton("Загрузка по прокрутке")
         self.load_more_button.setObjectName("SecondaryButton")
         self.load_more_button.setCursor(Qt.PointingHandCursor)
         self.load_more_button.setFocusPolicy(Qt.NoFocus)
-        self.load_more_button.clicked.connect(self.loadMoreRequested.emit)
+        self.load_more_button.setEnabled(False)
         self.load_more_button.hide()
         footer.addWidget(self.load_more_button)
         root.addLayout(footer)
@@ -172,6 +178,22 @@ class ModrinthCatalogWidget(QWidget):
         self._total_hits = 0
         self._reflow_pending = False
         self._column_count = 0
+        self._has_more = False
+        self._auto_load_pending = False
+
+    def _check_auto_load(self, value: int):
+        if not self._has_more or self._loading or self._auto_load_pending:
+            return
+        bar = self.scroll.verticalScrollBar()
+        if bar.maximum() > 0 and value < bar.maximum() - max(260, self.scroll.viewport().height() // 2):
+            return
+        self._auto_load_pending = True
+        QTimer.singleShot(320 if bar.maximum() <= 0 else 120, self._emit_auto_load)
+
+    def _emit_auto_load(self):
+        self._auto_load_pending = False
+        if self._has_more and not self._loading:
+            self.loadMoreRequested.emit()
 
     def clear(self, message: str = "Загружаем рекомендации Modrinth…"):
         for card in self.cards:
@@ -180,13 +202,15 @@ class ModrinthCatalogWidget(QWidget):
         self.cards.clear()
         self._total_hits = 0
         self._column_count = 0
+        self._has_more = False
+        self._auto_load_pending = False
         self.count_label.setText(message)
         self.load_more_button.hide()
         self.content.adjustSize()
 
     def set_loading(self, loading: bool, message: str | None = None):
         self._loading = bool(loading)
-        self.load_more_button.setEnabled(not self._loading)
+        self.load_more_button.setEnabled(False)
         if message:
             self.count_label.setText(message)
         elif self._loading:
@@ -216,14 +240,18 @@ class ModrinthCatalogWidget(QWidget):
             self.count_label.setText(f"Показано {shown} из {self._total_hits} проектов")
         else:
             self.count_label.setText(f"Найдено проектов: {shown}")
-        self.load_more_button.setVisible(shown < self._total_hits and bool(projects))
+        self.set_has_more(shown < self._total_hits and bool(projects))
         return added
 
     def set_empty(self, message: str):
         self.clear(message)
 
     def set_has_more(self, has_more: bool):
-        self.load_more_button.setVisible(bool(has_more))
+        self._has_more = bool(has_more)
+        # Никакой кнопки «Показать ещё»: следующая страница подгружается сама.
+        self.load_more_button.hide()
+        if self._has_more and not self._loading:
+            QTimer.singleShot(360, lambda: self._check_auto_load(self.scroll.verticalScrollBar().value()))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

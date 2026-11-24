@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QGridLayout, QStackedWidget, QComboBox, QLineEdit, QSpinBox,
     QCheckBox, QProgressBar, QPlainTextEdit, QFileDialog,
     QSizeGrip, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QScrollArea, QTabWidget,
-    QColorDialog, QSlider, QFontComboBox, QListWidget, QListWidgetItem, QInputDialog,
+    QColorDialog, QSlider, QFontComboBox, QListWidget, QListWidgetItem, QInputDialog, QScroller,
     QMenu, QButtonGroup, QSizePolicy,
 )
 
@@ -290,6 +290,7 @@ class LauncherWindow(QMainWindow):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.verticalScrollBar().setSingleStep(22)
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(2, 4, 5, 10)
@@ -403,16 +404,16 @@ class LauncherWindow(QMainWindow):
         left.setSpacing(9)
         eyebrow = QLabel("FIERCY LAUNCHER  ·  JAVA EDITION")
         eyebrow.setObjectName("Eyebrow")
-        title = QLabel("Запускай Minecraft.")
+        title = QLabel("Твой Minecraft начинается здесь.")
         title.setObjectName("HeroTitle")
-        copy = QLabel("Выбирай версию Minecraft, устанавливай её и играй. Готовые сборки и моды находятся в отдельном разделе.")
+        copy = QLabel("Выбери обычную версию или свою сборку — и возвращайся в игру. Всё нужное для модов и настроек собрано в одном месте.")
         copy.setObjectName("HeroCopy")
         copy.setWordWrap(True)
         left.addWidget(eyebrow)
         left.addWidget(title)
         left.addWidget(copy)
         left.addStretch(1)
-        chip = QLabel("●  ЧИСТАЯ УСТАНОВКА MINECRAFT")
+        chip = QLabel("●  ВЫБЕРИ, ВО ЧТО ИГРАТЬ")
         chip.setObjectName("Pill")
         left.addWidget(chip, 0, Qt.AlignLeft)
         row.addLayout(left, 1)
@@ -424,8 +425,8 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(hero)
 
         install_card, install_box = self._section_card(
-            "Выбор версии Minecraft",
-            "Выбери официальную версию Minecraft. Для модов и готовых сборок открой раздел «Моды и сборки»."
+            "Выбери игру",
+            "Здесь собраны установленные версии Minecraft и твои сборки. Новую сборку можно создать в разделе «Моды и сборки»."
         )
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
@@ -463,8 +464,8 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(install_card)
 
         play_card, play_box = self._section_card(
-            "Запуск Minecraft",
-            "Выбери установленную версию и запускай игру. Модовые сборки запускаются из раздела «Моды и сборки»."
+            "Запуск",
+            "Выбери версию или сборку, укажи игровой ник и нажми «Играть»."
         )
         nick_row = QHBoxLayout()
         nick_row.addWidget(QLabel("Ник для игры"))
@@ -518,13 +519,13 @@ class LauncherWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(self._heading(
-            "ТВОИ СБОРКИ И КОНТЕНТ", "Моды и сборки",
-            "Выбирай готовую сборку или создай свою. У каждой сборки отдельные моды, настройки и миры."
+            "ТВОЯ ИГРА — ТВОИ ПРАВИЛА", "Моды и сборки",
+            "Найди сборку по душе или собери свою. А когда захочется перемен — добавляй моды, ресурспаки и шейдеры."
         ))
 
         profiles_card, profiles_box = self._section_card(
-            "Твои сборки",
-            "Выбери готовую сборку или создай новую. Версия Minecraft и загрузчик фиксируются при создании, позже можно менять только версию загрузчика."
+            "Мои сборки",
+            "Здесь живут твои сборки. Выбери одну, чтобы управлять её содержимым и запускать игру."
         )
         row = QHBoxLayout()
         self.profiles_combo = WheelSafeComboBox()
@@ -534,6 +535,7 @@ class LauncherWindow(QMainWindow):
         self.create_profile_button = self._button("＋ Создать сборку", primary=True)
         self.create_profile_button.clicked.connect(self.create_profile)
         row.addWidget(self.create_profile_button)
+        self.create_profile_button.hide()
         self.rename_profile_button = self._button("Переименовать")
         self.rename_profile_button.clicked.connect(self.rename_profile)
         row.addWidget(self.rename_profile_button)
@@ -553,7 +555,7 @@ class LauncherWindow(QMainWindow):
 
         setup_card, setup_box = self._section_card(
             "Версия загрузчика",
-            "Версия Minecraft и тип загрузчика закреплены при создании. Здесь доступна только другая версия выбранного загрузчика."
+            "Версию Minecraft и тип загрузчика выбирают при создании сборки. Здесь можно обновить только сам загрузчик."
         )
         setup_grid = QGridLayout()
         setup_grid.setHorizontalSpacing(12)
@@ -591,8 +593,8 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(setup_card)
 
         actions_card, actions_box = self._section_card(
-            "Действия со сборкой",
-            "Операции разделены по назначению: файлы и параметры — отдельно, установка и запуск — отдельно."
+            "Настроить и запустить",
+            "Открой папку сборки, проверь файлы или установи обновления. Когда всё готово — запускай."
         )
         action_groups = QHBoxLayout()
         action_groups.setSpacing(12)
@@ -639,8 +641,8 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(actions_card)
 
         imports_card, imports_box = self._section_card(
-            "Импорт и дополнительные папки",
-            "Добавь готовую сборку, локальную установку Minecraft, карту или открой общую папку версий."
+            "Импорт и папки",
+            "Перенеси сборку или карту из другого места либо открой нужную игровую папку."
         )
         import_row = QHBoxLayout()
         import_version = self._button("Импортировать локальную версию")
@@ -672,8 +674,8 @@ class LauncherWindow(QMainWindow):
         mods_page_layout.setContentsMargins(8, 10, 8, 8)
         mods_page_layout.setSpacing(8)
         mods_card, mods_box = self._section_card(
-            "Содержимое сборки",
-            "Включай, отключай и удаляй установленные моды. Остальные папки доступны из каталога или проводника."
+            "Установлено в сборке",
+            "Управляй модами и переходи к ресурспакам и шейдерам. Изменения затронут только выбранную сборку."
         )
         mods_row = QHBoxLayout()
         self.profile_mod_list = QListWidget()
@@ -718,23 +720,24 @@ class LauncherWindow(QMainWindow):
         mods_box.addWidget(self.mod_count_label)
         mods_page_layout.addWidget(mods_card)
         mods_page_layout.addStretch(1)
-        self.profile_tabs.addTab(mods_page, "Моя сборка")
+        self.profile_tabs.addTab(mods_page, "Содержимое сборки")
 
         catalog_page = QWidget()
         catalog_page_layout = QVBoxLayout(catalog_page)
         catalog_page_layout.setContentsMargins(8, 10, 8, 8)
         catalog_page_layout.setSpacing(8)
         catalog_card, catalog_box = self._section_card(
-            "Каталог Modrinth",
-            "Ищи и устанавливай проекты в выбранную сборку. Готовые сборки можно просматривать и без созданного профиля."
+            "Найди что-нибудь новое",
+            "Популярные проекты, полезные дополнения и готовые сборки — выбирай и устанавливай прямо отсюда."
         )
         filters_row = QHBoxLayout()
         filters_row.setSpacing(8)
         self.mod_content_type_combo = WheelSafeComboBox()
+        self.mod_content_type_combo.addItem("Готовые сборки", "modpack")
         self.mod_content_type_combo.addItem("Моды", "mod")
         self.mod_content_type_combo.addItem("Ресурспаки", "resourcepack")
         self.mod_content_type_combo.addItem("Шейдеры", "shader")
-        self.mod_content_type_combo.addItem("Сборки", "modpack")
+        
         self.mod_content_type_combo.hide()
         self.mod_type_button_group = QButtonGroup(self)
         self.mod_type_button_group.setExclusive(True)
@@ -751,7 +754,8 @@ class LauncherWindow(QMainWindow):
             self.mod_type_buttons[value] = button
             filters_row.addWidget(button, 1)
             button.clicked.connect(lambda checked=False, target=value: self._select_mod_content_type(target))
-        self.mod_type_buttons["mod"].setChecked(True)
+        self.mod_type_buttons["modpack"].setChecked(True)
+        self._set_combo_value(self.mod_content_type_combo, "modpack")
         self.mod_sort_combo = WheelSafeComboBox()
         self.mod_sort_combo.addItem("По загрузкам", "downloads")
         self.mod_sort_combo.addItem("Популярные", "follows")
@@ -772,7 +776,7 @@ class LauncherWindow(QMainWindow):
         catalog_box.addLayout(search_row)
 
         self.mod_catalog_widget = ModrinthCatalogWidget()
-        self.mod_catalog_widget.setMinimumHeight(260)
+        self.mod_catalog_widget.setMinimumHeight(420)
         self.mod_catalog_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.mod_catalog_widget.projectDetailsRequested.connect(self.open_modrinth_project_details)
         self.mod_catalog_widget.installRequested.connect(self.install_modrinth_project)
@@ -783,7 +787,7 @@ class LauncherWindow(QMainWindow):
         self.mod_status_label.setWordWrap(True)
         catalog_box.addWidget(self.mod_status_label)
         catalog_page_layout.addWidget(catalog_card, 1)
-        self.profile_tabs.addTab(catalog_page, "Каталог Modrinth")
+        self.profile_tabs.addTab(catalog_page, "Каталог")
         layout.addWidget(self.profile_tabs, 1)
 
         self.mod_search_timer = QTimer(self)
@@ -799,7 +803,59 @@ class LauncherWindow(QMainWindow):
         self.profile_setup_loader_combo.currentIndexChanged.connect(self._profile_setup_loader_changed)
         self.profile_setup_loader_version_combo.currentIndexChanged.connect(self._profile_setup_changed)
         scroll.setWidget(page)
-        return scroll
+
+        # Главная страница раздела — полноценный каталог сборок. Рабочее место
+        # с параметрами и файлами показывается отдельно, после выбора сборки.
+        self.profile_tabs.removeTab(1)
+        self.profile_workspace = QTabWidget()
+        self.profile_workspace.setObjectName("ProfileWorkspace")
+        self.profile_workspace.setDocumentMode(True)
+        self.profile_workspace.tabBar().hide()
+        self.profile_workspace.addTab(catalog_page, "Каталог")
+        self.profile_workspace.addTab(scroll, "Мои сборки")
+
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(10)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        self.workspace_catalog_button = self._button("Каталог сборок")
+        self.workspace_catalog_button.clicked.connect(lambda: self._switch_profile_workspace(0))
+        toolbar.addWidget(self.workspace_catalog_button)
+        self.workspace_create_button = self._button("＋ Создать сборку", primary=True)
+        self.workspace_create_button.clicked.connect(self.create_profile)
+        toolbar.addWidget(self.workspace_create_button)
+        self.workspace_mine_button = self._button("Мои сборки")
+        self.workspace_mine_button.clicked.connect(lambda: self._switch_profile_workspace(1))
+        toolbar.addWidget(self.workspace_mine_button)
+        toolbar.addStretch(1)
+        shell_layout.addLayout(toolbar)
+        shell_layout.addWidget(self.profile_workspace, 1)
+        self.profile_workspace.currentChanged.connect(self._profile_workspace_changed)
+        self._switch_profile_workspace(0, search=False)
+        return shell
+
+    def _switch_profile_workspace(self, index: int, search: bool = True):
+        if not hasattr(self, "profile_workspace"):
+            return
+        self.profile_workspace.setCurrentIndex(index)
+        for button, active in ((self.workspace_catalog_button, index == 0),
+                               (self.workspace_mine_button, index == 1)):
+            button.setProperty("active", active)
+            button.setChecked(active)
+            button.setObjectName("PrimaryButton" if active else "SecondaryButton")
+            button.style().unpolish(button)
+            button.style().polish(button)
+        # Загрузку каталога запускает currentChanged; так не создаются два
+        # одинаковых запроса при переключении страниц.
+
+    def _profile_workspace_changed(self, index: int):
+        if index == 0:
+            QTimer.singleShot(0, self.search_mods)
+        elif index == 1:
+            self._refresh_profiles()
+            self._refresh_mod_list()
 
     def _update_ram_label(self, gigabytes: int):
         if hasattr(self, "ram_value_label"):
@@ -1205,7 +1261,7 @@ class LauncherWindow(QMainWindow):
             button.style().polish(button)
         if index == 1:
             self._refresh_mod_list()
-            if self._has_active_profile() and self.profile_tabs.currentIndex() == 1:
+            if hasattr(self, "profile_workspace") and self.profile_workspace.currentIndex() == 0:
                 self.search_mods()
         elif index == 4:
             self._refresh_logs()
@@ -1304,7 +1360,7 @@ class LauncherWindow(QMainWindow):
         self._set_status("список версий загружен")
         if self._has_active_profile():
             self._refresh_profile_setup_controls()
-            if self.stack.currentIndex() == 1 and self.profile_tabs.currentIndex() == 1:
+            if self.stack.currentIndex() == 1 and hasattr(self, "profile_workspace") and self.profile_workspace.currentIndex() == 0:
                 self.search_mods()
 
     @staticmethod
@@ -1425,6 +1481,20 @@ class LauncherWindow(QMainWindow):
             log.exception("Не удалось обновить storage_root профиля")
         return self.game_root
 
+    def _profile_game_root_for(self, profile: dict) -> Path:
+        if str(profile.get("storage_root", "shared")) == "shared":
+            return self.game_root
+        legacy = self.profile_manager.instance_dir(str(profile.get("id", "")))
+        versions = legacy / "versions"
+        if versions.is_dir():
+            try:
+                if any((folder / f"{folder.name}.json").is_file()
+                       for folder in versions.iterdir() if folder.is_dir()):
+                    return legacy
+            except OSError:
+                pass
+        return self.game_root
+
     def _refresh_installed_versions(self):
         """Главный экран показывает версии из обычной общей папки Minecraft."""
         if not hasattr(self, "installed_combo"):
@@ -1445,21 +1515,37 @@ class LauncherWindow(QMainWindow):
             version_id = item.get("id") if isinstance(item, dict) else str(item)
             if not version_id:
                 continue
-            # Каталог главной страницы — только обычные Vanilla-версии.
-            # Forge/Fabric/NeoForge/Quilt устанавливаются и запускаются из профилей.
             try:
                 metadata = read_version_metadata(self.game_root, str(version_id))
                 if metadata.get("loader") != "vanilla":
                     continue
             except (OSError, ValueError, KeyError, TypeError):
-                # Не показываем сомнительную запись, если metadata повреждены.
                 continue
-            self.installed_combo.addItem(str(version_id), str(version_id))
-        pos = self.installed_combo.findData(previous)
+            label = f"Minecraft {version_id}"
+            self.installed_combo.addItem(label, {"kind": "vanilla", "version_id": str(version_id)})
+        for profile in self.profile_manager.all():
+            version_id = str(profile.get("installed_version_id", "")).strip()
+            if not version_id:
+                continue
+            try:
+                metadata = read_version_metadata(self._profile_game_root_for(profile), version_id)
+                # A profile entry is shown only if its installed version metadata exists.
+                if not metadata:
+                    continue
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            self.installed_combo.addItem(str(profile.get("name") or "Моя сборка"),
+                                         {"kind": "profile", "profile_id": str(profile["id"])})
+        pos = -1
+        for i in range(self.installed_combo.count()):
+            data = self.installed_combo.itemData(i)
+            if data == previous:
+                pos = i
+                break
         if pos >= 0:
             self.installed_combo.setCurrentIndex(pos)
         if not self.installed_combo.count():
-            self.installed_combo.addItem("Нет установленных версий", None)
+            self.installed_combo.addItem("Пока ничего не установлено", None)
         self.installed_combo.blockSignals(False)
 
     def _installed_version_changed(self, index: int):
@@ -1589,13 +1675,29 @@ class LauncherWindow(QMainWindow):
         if self.maintenance_mode or self.minimum_version_block:
             self._notify("Запуск временно недоступен", self._policy_message(), "warning", 6500)
             return
-        version_id = self.installed_combo.currentData()
-        if not version_id:
-            self._notify("Нет установленной версии", "Сначала установи Minecraft без профиля.", "warning")
+        selection = self.installed_combo.currentData()
+        if not selection:
+            self._notify("Пока нечего запускать", "Сначала установи обычный Minecraft или свою сборку.", "warning")
             return
         account = self._build_launch_account()
-        if account:
-            self._start_launch(str(version_id), self.game_root, self.game_root, account, self.play_button)
+        if not account:
+            return
+        if isinstance(selection, dict) and selection.get("kind") == "profile":
+            profile_id = str(selection.get("profile_id", ""))
+            profile = self.profile_manager.get(profile_id)
+            if not profile:
+                self._refresh_installed_versions()
+                self._notify("Сборка не найдена", "Обнови список установленных версий и выбери сборку ещё раз.", "warning")
+                return
+            version_id = str(profile.get("installed_version_id", "")).strip()
+            if not version_id:
+                self._notify("Сборка ещё не установлена", "Открой «Моды и сборки» → «Мои сборки» и установи её.", "warning")
+                return
+            self._start_launch(version_id, self._profile_game_root_for(profile),
+                               self.profile_manager.instance_dir(profile_id), account, self.play_button)
+        else:
+            version_id = str(selection.get("version_id", "")) if isinstance(selection, dict) else str(selection)
+            self._start_launch(version_id, self.game_root, self.game_root, account, self.play_button)
 
     def launch_active_profile(self):
         if self.maintenance_mode or self.minimum_version_block:
@@ -1870,11 +1972,7 @@ class LauncherWindow(QMainWindow):
             self._set_combo_value(self.mod_content_type_combo, "modpack")
             self.mod_content_type_combo.blockSignals(False)
             if hasattr(self, "profile_tabs"):
-                self.profile_tabs.setCurrentIndex(1)
-        elif has_profile and hasattr(self, "mod_content_type_combo"):
-            self.mod_content_type_combo.blockSignals(True)
-            self._set_combo_value(self.mod_content_type_combo, "mod")
-            self.mod_content_type_combo.blockSignals(False)
+                self.profile_tabs.setCurrentIndex(0)
         if hasattr(self, "profile_mod_list"):
             self._refresh_mod_list()
 
@@ -1894,8 +1992,9 @@ class LauncherWindow(QMainWindow):
         self._refresh_profiles()
         self._refresh_profile_setup_controls()
         self._refresh_mod_list()
-        if self.stack.currentIndex() == 1:
-            self.search_mods()
+        if self.stack.currentIndex() == 1 and hasattr(self, "profile_workspace"):
+            self._switch_profile_workspace(1)
+            self.profile_tabs.setCurrentIndex(0)
 
     @staticmethod
     def _set_combo_value(combo, value: str):
@@ -2124,6 +2223,7 @@ class LauncherWindow(QMainWindow):
                 loader_version=values["loader_version"], storage_root="shared", kind="custom",
             )
             self._set_active_profile(profile["id"])
+            self._switch_profile_workspace(1)
             self.profile_setup_status.setText(
                 "Сборка создана. Версия Minecraft и загрузчик закреплены. При необходимости можно выбрать другую "
                 "версию этого загрузчика, затем установить сборку."
@@ -2358,7 +2458,7 @@ class LauncherWindow(QMainWindow):
 
     def add_local_mod_files(self):
         if not self._has_active_profile():
-            self._notify("Сборка не выбрана", "Сначала создай профиль сборки.", "info")
+            self._notify("Сборка не выбрана", "Сначала создай свою сборку или выбери одну из списка.", "info")
             return
         files, _ = QFileDialog.getOpenFileNames(self, "Добавить локальные JAR-моды", "", "Minecraft mods (*.jar)")
         if not files:
@@ -2372,7 +2472,7 @@ class LauncherWindow(QMainWindow):
 
     def _open_profile_subfolder(self, name: str):
         if not self._has_active_profile():
-            self._notify("Сборка не выбрана", "Сначала создай профиль сборки.", "info")
+            self._notify("Сборка не выбрана", "Сначала создай свою сборку или выбери одну из списка.", "info")
             return
         allowed = {"mods", "config", "resourcepacks", "shaderpacks", "saves", "screenshots"}
         if name not in allowed:
@@ -2384,19 +2484,8 @@ class LauncherWindow(QMainWindow):
         return str(profile.get("minecraft_version", "")).strip(), str(profile.get("loader", "vanilla")).lower()
 
     def _profile_content_tab_changed(self, index: int):
-        # The catalog is the main task on this tab. Collapse setup/import actions
-        # while browsing, leaving only the profile selector visible at the top.
-        show_setup = index == 0
-        for name in ("profile_setup_card", "profile_actions_card", "profile_imports_card"):
-            widget = getattr(self, name, None)
-            if widget is not None:
-                widget.setVisible(show_setup)
-        if hasattr(self, "profile_header_card"):
-            self.profile_header_card.setVisible(True)
-        if index == 1:
-            QTimer.singleShot(0, self._resize_profile_catalog)
-            if self.stack.currentIndex() == 1:
-                self.search_mods()
+        # Внутренняя вкладка содержит только файлы выбранной сборки.
+        self._refresh_mod_list()
 
     def _resize_profile_catalog(self):
         if hasattr(self, "mod_catalog_widget"):
@@ -2413,18 +2502,18 @@ class LauncherWindow(QMainWindow):
 
     def _catalog_filters_changed(self, *_args):
         if hasattr(self, "mod_type_buttons"):
-            active = str(self.mod_content_type_combo.currentData() or "mod")
+            active = str(self.mod_content_type_combo.currentData() or "modpack")
             for key, button in self.mod_type_buttons.items():
                 button.setChecked(key == active)
-        if self.profile_tabs.currentIndex() == 1:
+        if self.profile_workspace.currentIndex() == 0:
             self.search_mods()
 
     def search_mods(self, *_args, load_more: bool = False):
         if not hasattr(self, "mod_catalog_widget"):
             return
-        if self.profile_tabs.currentIndex() != 1:
+        if self.profile_workspace.currentIndex() != 0:
             return
-        project_type = str(self.mod_content_type_combo.currentData() or "mod")
+        project_type = str(self.mod_content_type_combo.currentData() or "modpack")
         if not self._has_active_profile() and project_type != "modpack":
             self.mod_catalog_widget.clear("Готовые сборки доступны без профиля. Для каталога модов и ресурспаков создай или выбери сборку.")
             self.mod_status_label.setText("Выбери готовую сборку или создай свою.")
@@ -2481,7 +2570,7 @@ class LauncherWindow(QMainWindow):
     def _mod_search_loaded(self, payload: dict, append: bool = False, request_key=None):
         current_key = (
             self.mod_search_edit.text().strip().casefold(),
-            str(self.mod_content_type_combo.currentData() or "mod"),
+            str(self.mod_content_type_combo.currentData() or "modpack"),
             str(self.mod_sort_combo.currentData() or "downloads"),
             *(self._current_mod_compatibility() if self._has_active_profile() else ("", "")),
         )
@@ -2972,7 +3061,7 @@ class LauncherWindow(QMainWindow):
 
     def open_profile_folder(self):
         if not self._has_active_profile():
-            self._notify("Сборка не выбрана", "Сначала создай профиль сборки.", "info")
+            self._notify("Сборка не выбрана", "Сначала создай свою сборку или выбери одну из списка.", "info")
             return
         self._open_folder(self._instance_dir())
 
