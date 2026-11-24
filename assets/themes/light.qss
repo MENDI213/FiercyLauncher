@@ -130,3 +130,12 @@ QListWidget#ProfileModsList::item { border: 0; padding: 2px; }
 QListWidget#ProfileModsList::item:selected { background: #e9eef7; border-radius: 8px; }
 QPushButton#InstalledModTitle { color: #1e2a3d; font-weight: 700; }
 QPushButton#InstalledModTitle:hover { color: #7658d9; }
+
+QLabel#ModrinthProjectState[state="queued"] { color: #916400; font-weight: 700; font-size: 8pt; }
+QLabel#ModrinthProjectState[state="downloading"] { color: #176aa0; font-weight: 700; font-size: 8pt; }
+QLabel#ModrinthProjectState[state="installed"] { color: #13723d; font-weight: 700; font-size: 8pt; }
+QLabel#ModrinthProjectState[state="failed"] { color: #b12e40; font-weight: 700; font-size: 8pt; }
+QPushButton#ModrinthQueuedButton { color: #805b00; background: #fff4d6; border: 1px solid #e9cf83; border-radius: 10px; padding: 9px 12px; font-weight: 800; }
+QPushButton#ModrinthDownloadingButton { color: #175a83; background: #e4f3ff; border: 1px solid #acd2ef; border-radius: 10px; padding: 9px 12px; font-weight: 800; }
+QPushButton#ModrinthInstalledButton { color: #12633b; background: #e2f8eb; border: 1px solid #9cdbb3; border-radius: 10px; padding: 9px 12px; font-weight: 800; }
+QPushButton#ModrinthRetryButton { color: #9c283a; background: #fff0f1; border: 1px solid #efb9c0; border-radius: 10px; padding: 9px 12px; font-weight: 800; }

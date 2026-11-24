@@ -13,6 +13,11 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from tls_bootstrap import configure_tls_bundle
+
+# Do this before requests creates its first Session.
+configure_tls_bundle()
+
 import requests
 from update_download import download_verified_asset
 from secure_archive import validate_zip, safe_extract_zip

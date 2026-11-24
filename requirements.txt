@@ -7,3 +7,4 @@ psutil>=6.1
 keyring>=25.5
 PyInstaller>=6.11
 pypresence>=4.6.2,<5
+certifi>=2025.1.31,<2027

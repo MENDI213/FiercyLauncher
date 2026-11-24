@@ -18,15 +18,15 @@ from pathlib import Path, PurePosixPath
 
 from packaging.version import InvalidVersion, Version
 import minecraft_launcher_lib as mll
-from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, QPropertyAnimation, QEasingCurve
+from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, QObject, pyqtSignal
 from PyQt5.QtGui import QIcon, QDesktopServices, QColor, QImage, QPixmap, QPainter
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QFrame, QLabel, QPushButton, QToolButton, QVBoxLayout,
     QHBoxLayout, QGridLayout, QStackedWidget, QComboBox, QLineEdit, QSpinBox,
     QCheckBox, QProgressBar, QPlainTextEdit, QFileDialog,
-    QSizeGrip, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QScrollArea, QTabWidget,
+    QSizeGrip, QGraphicsDropShadowEffect, QScrollArea, QTabWidget,
     QColorDialog, QSlider, QFontComboBox, QListWidget, QListWidgetItem, QInputDialog, QScroller,
-    QMenu, QButtonGroup, QSizePolicy,
+    QMenu, QButtonGroup, QSizePolicy, QMessageBox,
 )
 
 from github_service import ReleaseCheckWorker, AssetDownloadWorker, StaticContentWorker, RemoteImageWorker
@@ -37,7 +37,7 @@ from appearance_manager import AppearanceManager, PRESETS, COLOR_LABELS
 from toast_notifications import ToastNotification
 from path_utils import migrate_game_data, resolve_launcher_root, selected_base_from_root
 from version import LAUNCHER_NAME, LAUNCHER_VERSION, GITHUB_API_LATEST
-from ui_controls import (WheelSafeComboBox, WheelSafeFontComboBox, WheelSafeSpinBox, WheelSafeSlider, WheelSafeTabBar)
+from ui_controls import (WheelSafeComboBox, WheelSafeFontComboBox, WheelSafeSpinBox, WheelSafeSlider, WheelSafeTabBar, SmoothScrollArea, SmoothListWidget)
 from profile_dialog import CreateProfileDialog
 from mod_service import (list_mod_files, set_mod_enabled, add_local_mods,
                          ModrinthSearchWorker, ModrinthProjectDetailsWorker,
@@ -52,6 +52,13 @@ from modrinth_ui import ModrinthCatalogWidget, ModrinthProjectDetailsDialog
 
 log = logging.getLogger("fiercy.ui")
 ROOT = Path(__file__).resolve().parent
+
+
+class ModInstallTaskRelay(QObject):
+    """Переносит события QThread в GUI-поток вместе с ID задачи."""
+    result = pyqtSignal(str, object, str)
+    progress = pyqtSignal(str, str)
+    finished = pyqtSignal(str)
 
 
 class TitleBar(QFrame):
@@ -140,6 +147,7 @@ class LauncherWindow(QMainWindow):
         saved_profile_id = str(self.settings.value("profiles/active", ""))
         self.active_profile_id = saved_profile_id if self.profile_manager.get(saved_profile_id) else (
             profiles[0]["id"] if profiles else "")
+        self.catalog_profile_id = self.active_profile_id
 
         self.versions: list[dict] = []
         self.remote_launcher_config: dict = {}
@@ -156,7 +164,11 @@ class LauncherWindow(QMainWindow):
         self.banner_worker = None
         self.mod_search_worker = None
         self.mod_details_worker = None
-        self.mod_install_worker = None
+        self.mod_install_worker = None  # Совместимость с прежним интерфейсом закрытия окна.
+        self._mod_install_queue = []
+        self._mod_install_tasks = {}
+        self._mod_install_active = {}
+        self._mod_install_max_parallel = 4
         self.mod_image_workers = []
         self._mod_image_queue = []
         self._mod_image_active = 0
@@ -247,9 +259,6 @@ class LauncherWindow(QMainWindow):
             side.addWidget(button)
         side.addStretch(1)
 
-        foot = QLabel(f"FIERCY  ·  {LAUNCHER_VERSION}\nТема и настройки персонализируются")
-        foot.setObjectName("SmallNote")
-        side.addWidget(foot)
         body.addWidget(sidebar)
 
         content = QWidget()
@@ -285,12 +294,13 @@ class LauncherWindow(QMainWindow):
         return frame
 
     def _scroll_page(self):
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.verticalScrollBar().setSingleStep(22)
+        QScroller.grabGesture(scroll.viewport(), QScroller.TouchGesture)
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(2, 4, 5, 10)
@@ -511,9 +521,12 @@ class LauncherWindow(QMainWindow):
         return scroll
 
     def _build_profile_page(self):
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.verticalScrollBar().setSingleStep(22)
+        QScroller.grabGesture(scroll.viewport(), QScroller.TouchGesture)
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -678,13 +691,14 @@ class LauncherWindow(QMainWindow):
             "Управляй модами и переходи к ресурспакам и шейдерам. Изменения затронут только выбранную сборку."
         )
         mods_row = QHBoxLayout()
-        self.profile_mod_list = QListWidget()
+        self.profile_mod_list = SmoothListWidget()
         self.profile_mod_list.setObjectName("ProfileModsList")
         self.profile_mod_list.setMinimumHeight(220)
         self.profile_mod_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.profile_mod_list.setSpacing(3)
         self.profile_mod_list.setUniformItemSizes(True)
         self.profile_mod_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        QScroller.grabGesture(self.profile_mod_list.viewport(), QScroller.TouchGesture)
         self.profile_mod_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.profile_mod_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.profile_mod_list.customContextMenuRequested.connect(self._show_mod_context_menu)
@@ -727,9 +741,27 @@ class LauncherWindow(QMainWindow):
         catalog_page_layout.setContentsMargins(8, 10, 8, 8)
         catalog_page_layout.setSpacing(8)
         catalog_card, catalog_box = self._section_card(
-            "Найди что-нибудь новое",
-            "Популярные проекты, полезные дополнения и готовые сборки — выбирай и устанавливай прямо отсюда."
+            "Что поставим в игру?",
+            "Выбирай моды, ресурспаки, шейдеры или готовые сборки. Перед установкой укажи, куда сохранить дополнения."
         )
+        target_row = QHBoxLayout()
+        target_row.setSpacing(10)
+        target_label = QLabel("КУДА УСТАНАВЛИВАТЬ")
+        target_label.setObjectName("SectionTitle")
+        target_row.addWidget(target_label)
+        self.catalog_profile_combo = WheelSafeComboBox()
+        self.catalog_profile_combo.setMinimumHeight(38)
+        self.catalog_profile_combo.setMinimumWidth(320)
+        self.catalog_profile_combo.setToolTip("Выбери сборку, в папку которой будут установлены моды, ресурспаки и шейдеры.")
+        self.catalog_profile_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.catalog_profile_combo.currentIndexChanged.connect(self._catalog_profile_changed)
+        target_row.addWidget(self.catalog_profile_combo, 1)
+        self.catalog_target_hint = QLabel("Сначала выбери сборку. Все новые моды и дополнения попадут именно в неё.")
+        self.catalog_target_hint.setObjectName("Muted")
+        self.catalog_target_hint.setWordWrap(True)
+        target_row.addWidget(self.catalog_target_hint, 2)
+        catalog_box.addLayout(target_row)
+
         filters_row = QHBoxLayout()
         filters_row.setSpacing(8)
         self.mod_content_type_combo = WheelSafeComboBox()
@@ -780,6 +812,7 @@ class LauncherWindow(QMainWindow):
         self.mod_catalog_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.mod_catalog_widget.projectDetailsRequested.connect(self.open_modrinth_project_details)
         self.mod_catalog_widget.installRequested.connect(self.install_modrinth_project)
+        self.mod_catalog_widget.removeRequested.connect(self.remove_modrinth_project)
         self.mod_catalog_widget.loadMoreRequested.connect(lambda: self.search_mods(load_more=True))
         catalog_box.addWidget(self.mod_catalog_widget, 1)
         self.mod_status_label = QLabel("Здесь можно найти моды, ресурспаки, шейдеры и готовые сборки.")
@@ -947,13 +980,16 @@ class LauncherWindow(QMainWindow):
             "Discord",
             "Чтобы Discord показывал FiercyLauncher без отдельного Application ID, добавь исполняемый файл лаунчера в зарегистрированные игры Discord. Подробный Rich Presence с версией Minecraft требует собственного Application ID; лаунчер не запрашивает его у игроков."
         )
-        self.discord_presence_check = QCheckBox("Показывать активность FiercyLauncher в Discord")
+        self.discord_presence_check = QCheckBox("Включить расширенное отображение Minecraft в Discord")
         self.discord_presence_check.setChecked(self.settings.value("discord/enabled", True, type=bool))
         discord_box.addWidget(self.discord_presence_check)
+        executable_name = Path(sys.executable).name if getattr(sys, "frozen", False) else "python.exe (при запуске из исходников)"
         discord_hint = QLabel(
-            "Открой Discord → Настройки пользователя → Зарегистрированные игры → Добавить игру. "
-            "Выбери FiercyLauncher.exe и включи отображение текущей активности в настройках конфиденциальности. "
-            "После этого Discord покажет название приложения без ключа и дополнительных действий при каждом запуске."
+            "Чтобы Discord показывал «Играет в FiercyLauncher» без Application ID, один раз добавь запущенное приложение "
+            "в Настройки пользователя → Зарегистрированные игры → Добавить игру. "
+            f"В установленной версии выбери FiercyLauncher.exe (сейчас процесс: {executable_name}). "
+            "Затем включи «Отображать текущую активность». Сам Discord определяет зарегистрированный EXE; "
+            "лаунчер не может включить чужую активность без регистрации или общего Application ID."
         )
         discord_hint.setObjectName("Muted")
         discord_hint.setWordWrap(True)
@@ -1242,19 +1278,10 @@ class LauncherWindow(QMainWindow):
                 "warning", 6500,
             )
             return
-        page = self.stack.widget(index)
+        # Переключаем страницы без opacity/compositing-анимации. На слабых
+        # интегрированных GPU QGraphicsOpacityEffect создаёт off-screen буфер
+        # всей страницы и заметно снижает FPS при переходах между каталогами.
         self.stack.setCurrentIndex(index)
-        low_effects = bool(self.appearance_geometry.get("low_effects", True))
-        if not low_effects:
-            effect = QGraphicsOpacityEffect(page)
-            page.setGraphicsEffect(effect)
-            self._page_animation = QPropertyAnimation(effect, b"opacity", self)
-            self._page_animation.setDuration(150)
-            self._page_animation.setStartValue(0.82)
-            self._page_animation.setEndValue(1.0)
-            self._page_animation.setEasingCurve(QEasingCurve.OutCubic)
-            self._page_animation.finished.connect(lambda p=page: p.setGraphicsEffect(None))
-            self._page_animation.start()
         for i, button in enumerate(self.nav_buttons):
             button.setProperty("active", i == index)
             button.style().unpolish(button)
@@ -1745,12 +1772,16 @@ class LauncherWindow(QMainWindow):
 
     def open_discord_games_settings(self):
         url = QUrl("discord://-/settings/game-activity")
-        if not QDesktopServices.openUrl(url):
-            self._notify(
-                "Настройки Discord",
-                "Открой Discord вручную: Настройки пользователя → Зарегистрированные игры → Добавить игру.",
-                "info", 8000,
-            )
+        opened = QDesktopServices.openUrl(url)
+        executable_name = Path(sys.executable).name if getattr(sys, "frozen", False) else "python.exe"
+        message = (
+            "В Discord нажми «Добавить игру» и выбери запущенный FiercyLauncher.exe. "
+            f"Сейчас процесс приложения: {executable_name}. После регистрации Discord будет показывать "
+            "«Играет в FiercyLauncher» автоматически, пока приложение открыто."
+        )
+        self._notify("Зарегистрируй FiercyLauncher в Discord", message, "info", 10000)
+        if not opened:
+            log.info("Discord settings deep link could not be opened; user can open game activity settings manually.")
 
     def _configure_discord_presence(self):
         enabled = self.discord_presence_check.isChecked() if hasattr(self, "discord_presence_check") else self.settings.value("discord/enabled", False, type=bool)
@@ -1763,7 +1794,7 @@ class LauncherWindow(QMainWindow):
 
     def _game_process_started(self, pid: int):
         self._game_process_pid = int(pid)
-        self._discord_game_started_at = int(time.time() * 1000)
+        self._discord_game_started_at = int(time.time())
         self._publish_game_presence()
 
     def _publish_game_presence(self):
@@ -1958,6 +1989,26 @@ class LauncherWindow(QMainWindow):
             if pos >= 0:
                 combo.setCurrentIndex(pos)
             combo.blockSignals(False)
+        target_combo = getattr(self, "catalog_profile_combo", None)
+        if target_combo is not None:
+            target_combo.blockSignals(True)
+            target_combo.clear()
+            target_combo.addItem("Выбери сборку для установки…", "")
+            for profile in profiles:
+                target_combo.addItem(f"{profile['name']}  ·  {profile.get('minecraft_version', '?')} / {profile.get('loader', 'vanilla')}", profile["id"])
+            if self.catalog_profile_id and not self.profile_manager.get(str(self.catalog_profile_id)):
+                self.catalog_profile_id = self.active_profile_id if self.profile_manager.get(self.active_profile_id) else ""
+            target_pos = target_combo.findData(self.catalog_profile_id)
+            target_combo.setCurrentIndex(max(0, target_pos))
+            target_combo.blockSignals(False)
+            target_profile = self._catalog_target_profile()
+            if target_profile:
+                self.catalog_target_hint.setText(
+                    f"Новые дополнения установятся в «{target_profile.get('name')}» "
+                    f"({target_profile.get('minecraft_version', '?')} · {target_profile.get('loader', 'vanilla')})."
+                )
+            else:
+                self.catalog_target_hint.setText("Сначала выбери сборку. Готовые сборки можно скачать отдельно.")
         has_profile = self._has_active_profile()
         for name in ("rename_profile_button", "delete_profile_button", "save_profile_button",
                      "install_profile_button", "play_profile_button"):
@@ -1987,6 +2038,7 @@ class LauncherWindow(QMainWindow):
         if not self.profile_manager.get(profile_id):
             return
         self.active_profile_id = profile_id
+        self.catalog_profile_id = profile_id
         self.settings.setValue("profiles/active", profile_id)
         self.settings.sync()
         self._refresh_profiles()
@@ -2483,6 +2535,95 @@ class LauncherWindow(QMainWindow):
         profile = self._active_profile()
         return str(profile.get("minecraft_version", "")).strip(), str(profile.get("loader", "vanilla")).lower()
 
+    def _catalog_target_profile(self) -> dict:
+        return self.profile_manager.get(str(self.catalog_profile_id or "")) or {}
+
+    def _has_catalog_target_profile(self) -> bool:
+        return bool(self._catalog_target_profile())
+
+    def _catalog_mod_compatibility(self) -> tuple[str, str]:
+        profile = self._catalog_target_profile()
+        return str(profile.get("minecraft_version", "")).strip(), str(profile.get("loader", "vanilla")).lower()
+
+    def _catalog_profile_changed(self, index: int):
+        if index < 0 or not hasattr(self, "catalog_profile_combo"):
+            return
+        selected = str(self.catalog_profile_combo.itemData(index) or "")
+        if selected and not self.profile_manager.get(selected):
+            selected = ""
+        if selected == self.catalog_profile_id:
+            return
+        self.catalog_profile_id = selected
+        if selected:
+            profile = self.profile_manager.get(selected) or {}
+            self.catalog_target_hint.setText(
+                f"Новые моды и дополнения будут установлены в сборку «{profile.get('name', 'Без названия')}» "
+                f"({profile.get('minecraft_version', '?')} · {profile.get('loader', 'vanilla')})."
+            )
+        else:
+            self.catalog_target_hint.setText("Сначала выбери сборку. Готовые Modrinth-сборки можно скачать отдельно.")
+        self._refresh_catalog_project_states()
+        if self.profile_workspace.currentIndex() == 0:
+            self.search_mods()
+
+    def _refresh_catalog_project_states(self):
+        if not hasattr(self, "mod_catalog_widget"):
+            return
+        profile = self._catalog_target_profile()
+        if not profile:
+            self.mod_catalog_widget.set_project_states({})
+            return
+        installed = set()
+        states: dict[str, tuple[str, str]] = {}
+        # Восстанавливаем состояние очереди именно для выбранной сборки.
+        # Задачи других профилей не должны менять подписи карточек этого каталога.
+        for task_id, task in self._mod_install_tasks.items():
+            if str(task.get("profile_id", "")) != str(profile.get("id", "")):
+                continue
+            project_id = str(task.get("project_id", ""))
+            if project_id:
+                state = "downloading" if task_id in self._mod_install_active else "queued"
+                states[project_id] = (state, "Скачивание" if state == "downloading" else "В очереди")
+        try:
+            instance = self.profile_manager.instance_dir(str(profile["id"])).resolve()
+            metadata_path = instance / ".fiercy" / "modrinth-installed.json"
+            if metadata_path.is_file():
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                raw_files = metadata.get("files", {}) if isinstance(metadata, dict) else {}
+                if not isinstance(raw_files, dict):
+                    raw_files = {}
+                if not raw_files and isinstance(metadata, dict):
+                    # Формат до schema 2: filename -> project data.
+                    for filename, record in metadata.items():
+                        if filename == "schema" or not isinstance(record, dict):
+                            continue
+                        folder = {"mod": "mods", "resourcepack": "resourcepacks", "shader": "shaderpacks"}.get(
+                            str(record.get("project_type", "mod")), "mods")
+                        raw_files[f"{folder}/{Path(str(filename)).name}"] = record
+                for relative, record in raw_files.items():
+                    if not isinstance(record, dict) or not record.get("project_id"):
+                        continue
+                    rel_path = Path(str(relative))
+                    if rel_path.is_absolute() or ".." in rel_path.parts or not rel_path.parts:
+                        continue
+                    candidate = instance / rel_path
+                    if candidate.is_symlink():
+                        continue
+                    if not candidate.exists() and candidate.suffix.lower() == ".jar":
+                        disabled = candidate.with_name(candidate.name + ".disabled")
+                        if disabled.exists() and not disabled.is_symlink():
+                            candidate = disabled
+                    resolved = candidate.resolve()
+                    if instance in resolved.parents and resolved.is_file():
+                        installed.add(str(record["project_id"]))
+        except Exception:
+            log.exception("Не удалось проверить установленные проекты Modrinth")
+        for card in self.mod_catalog_widget.cards:
+            project_id = str(card.project.get("project_id", ""))
+            if project_id in installed:
+                states[project_id] = ("installed", "Уже в сборке")
+        self.mod_catalog_widget.set_project_states(states)
+
     def _profile_content_tab_changed(self, index: int):
         # Внутренняя вкладка содержит только файлы выбранной сборки.
         self._refresh_mod_list()
@@ -2514,16 +2655,16 @@ class LauncherWindow(QMainWindow):
         if self.profile_workspace.currentIndex() != 0:
             return
         project_type = str(self.mod_content_type_combo.currentData() or "modpack")
-        if not self._has_active_profile() and project_type != "modpack":
-            self.mod_catalog_widget.clear("Готовые сборки доступны без профиля. Для каталога модов и ресурспаков создай или выбери сборку.")
-            self.mod_status_label.setText("Выбери готовую сборку или создай свою.")
+        if not self._has_catalog_target_profile() and project_type != "modpack":
+            self.mod_catalog_widget.clear("Выбери сборку, чтобы увидеть совместимые моды, ресурспаки и шейдеры.")
+            self.mod_status_label.setText("Готовые сборки можно смотреть и скачивать без выбранной сборки.")
             return
         if self.mod_search_worker and self.mod_search_worker.isRunning():
             # При изменении фильтра после окончания текущего запроса выполняем
             # новый поиск, а не теряем действие пользователя.
             self._mod_search_pending = not load_more
             return
-        game_version, loader = self._current_mod_compatibility() if self._has_active_profile() else ("", "")
+        game_version, loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "")
         if not game_version and project_type != "modpack":
             self.mod_catalog_widget.clear("Выбери сборку, чтобы увидеть совместимые проекты.")
             self.mod_status_label.setText("Готовые сборки доступны без выбранного профиля.")
@@ -2572,7 +2713,7 @@ class LauncherWindow(QMainWindow):
             self.mod_search_edit.text().strip().casefold(),
             str(self.mod_content_type_combo.currentData() or "modpack"),
             str(self.mod_sort_combo.currentData() or "downloads"),
-            *(self._current_mod_compatibility() if self._has_active_profile() else ("", "")),
+            *(self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "")),
         )
         if request_key is not None and request_key != current_key:
             self.mod_catalog_widget.set_loading(False)
@@ -2599,12 +2740,13 @@ class LauncherWindow(QMainWindow):
             self.mod_catalog_widget.set_loading(False)
             return
 
-        _game_version, active_loader = self._current_mod_compatibility()
+        _game_version, active_loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "vanilla")
         for result in results:
             result["requires_loader"] = (
                 str(result.get("project_type", "mod")) == "mod" and active_loader == "vanilla"
             )
         cards = self.mod_catalog_widget.append_projects(results, total_hits)
+        self._refresh_catalog_project_states()
         for result, card in zip(results, cards):
             icon_url = str(result.get("icon_url", ""))
             if icon_url:
@@ -2655,12 +2797,12 @@ class LauncherWindow(QMainWindow):
 
     def open_modrinth_project_details(self, project: dict):
         project_type = str(project.get("project_type", "mod"))
-        if not self._has_active_profile() and project_type != "modpack":
-            self._notify("Сборка не выбрана", "Готовые сборки можно просматривать без профиля; для модов сначала создай или выбери сборку.", "info")
+        if not self._has_catalog_target_profile() and project_type != "modpack":
+            self._notify("Сборка не выбрана", "Для модов сначала выбери сборку в верхней части каталога.", "info")
             return
         if self.mod_details_worker and self.mod_details_worker.isRunning():
             return
-        game_version, loader = self._current_mod_compatibility() if self._has_active_profile() else ("", "")
+        game_version, loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "")
         self._pending_details_project = dict(project)
         self.mod_status_label.setText(f"Загружаем описание и версии «{project.get('title', '')}»…")
         worker = ModrinthProjectDetailsWorker(project.get("project_id", ""), game_version, loader,
@@ -2677,7 +2819,7 @@ class LauncherWindow(QMainWindow):
                         if key not in project or project.get(key) in (None, "", 0)})
         versions = payload.get("versions", []) or []
         dialog = ModrinthProjectDetailsDialog(project, versions, self)
-        _game_version, active_loader = self._current_mod_compatibility()
+        _game_version, active_loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "vanilla")
         if str(project.get("project_type", "mod")) == "mod" and active_loader == "vanilla":
             dialog.install_button.setEnabled(False)
             dialog.install_button.setText("Сначала выбери загрузчик")
@@ -2698,71 +2840,264 @@ class LauncherWindow(QMainWindow):
             self.install_modrinth_project(project, dialog.selected_version_id())
 
     def install_modrinth_project(self, project: dict, version_id: str = ""):
-        project_type = str(project.get("project_type", "mod"))
-        has_profile = self._has_active_profile()
-        if project_type != "modpack" and not has_profile:
-            self._notify("Сборка не выбрана", "Сначала создай или выбери сборку.", "warning")
-            return
-        if self.mod_install_worker and self.mod_install_worker.isRunning():
-            return
-        game_version, loader = self._current_mod_compatibility() if has_profile else ("", "")
-        if project_type != "modpack" and not game_version:
-            self._notify("Не выбрана версия Minecraft", "В текущей сборке не указана версия Minecraft.", "warning")
-            return
-        if project_type == "mod" and loader == "vanilla":
-            self._notify("Для модов нужен загрузчик", "Создай сборку с Fabric, Forge, NeoForge или Quilt.", "warning")
-            return
-        project_id = str(project.get("project_id", ""))
+        project_type = str(project.get("project_type", "mod")).lower()
+        project_id = str(project.get("project_id", "")).strip()
         if not project_id:
             self._notify("Modrinth не вернул ID проекта", "Не удалось определить проект для установки.", "error")
             return
-        profile_id = self.active_profile_id if has_profile else ""
+        profile = self._catalog_target_profile()
+        profile_id = str(profile.get("id", ""))
+        if project_type != "modpack" and not profile:
+            self._notify("Сначала выбери сборку", "Вверху каталога выбери, куда установить мод или дополнение.", "warning")
+            return
+        game_version = str(profile.get("minecraft_version", "")) if profile else ""
+        loader = str(profile.get("loader", "vanilla")).lower() if profile else ""
+        if project_type != "modpack" and not game_version:
+            self._notify("Не выбрана версия Minecraft", "В выбранной сборке не указана версия Minecraft.", "warning")
+            return
+        if project_type == "mod" and loader == "vanilla":
+            self._notify("Для модов нужен загрузчик", "Выбранная сборка Vanilla. Создай новую сборку с Fabric, Forge, NeoForge или Quilt.", "warning")
+            return
+
         if project_type == "modpack":
             instance_dir = user_data_dir() / "modpack-downloads"
             instance_dir.mkdir(parents=True, exist_ok=True)
         else:
-            instance_dir = self._instance_dir()
-        self._mod_install_profile_id = profile_id
-        self._mod_install_project_type = project_type
-        self._mod_install_project_name = str(project.get("title", project_id))
-        self._mod_install_project = dict(project)
-        worker = ModrinthInstallWorker(project_id, game_version, loader, str(instance_dir), project_type, version_id, self)
-        worker.completed.connect(self._mod_install_completed)
-        worker.failed.connect(self._mod_operation_failed)
-        worker.progress.connect(self.mod_status_label.setText)
-        self._retain_worker(worker)
-        self.mod_install_worker = worker
-        self.mod_status_label.setText(f"Начинается установка «{self._mod_install_project_name}»…")
-        worker.start()
+            instance_dir = self.profile_manager.instance_dir(profile_id)
 
-    def _mod_install_completed(self, paths: list):
-        if self._mod_install_project_type == "modpack" and paths:
-            self._start_downloaded_modpack_import(str(paths[0]), "")
+        # Несколько загрузок могут идти одновременно, но один проект в одну
+        # сборку не ставим повторно, пока предыдущая операция не завершилась.
+        task_key = (profile_id, project_type, project_id)
+        for task in self._mod_install_tasks.values():
+            if task.get("task_key") == task_key:
+                self._notify("Уже добавлено в очередь", f"«{project.get('title', project_id)}» уже скачивается или ожидает очереди.", "info")
+                return
+        task_id = uuid.uuid4().hex
+        task = {
+            "id": task_id,
+            "task_key": task_key,
+            "project": dict(project),
+            "project_id": project_id,
+            "project_type": project_type,
+            "project_name": str(project.get("title", project_id)),
+            "profile_id": profile_id,
+            "profile_name": str(profile.get("name", "")) if profile else "",
+            "game_version": game_version,
+            "loader": loader,
+            "instance_dir": str(instance_dir),
+            "version_id": str(version_id or ""),
+            "paths": None,
+            "error": "",
+        }
+        self._mod_install_tasks[task_id] = task
+        self._mod_install_queue.append(task_id)
+        self.mod_catalog_widget.set_project_state(project_id, "queued", "В очереди")
+        self.mod_status_label.setText(
+            f"«{task['project_name']}» добавлено в очередь для «{task['profile_name'] or 'загрузки сборки'}». "
+            f"Активных загрузок: {len(self._mod_install_active)}/{self._mod_install_max_parallel}."
+        )
+        self._start_next_mod_installations()
+
+    def _start_next_mod_installations(self):
+        while self._mod_install_queue and len(self._mod_install_active) < self._mod_install_max_parallel:
+            task_id = self._mod_install_queue.pop(0)
+            task = self._mod_install_tasks.get(task_id)
+            if not task:
+                continue
+            worker = ModrinthInstallWorker(
+                task["project_id"], task["game_version"], task["loader"], task["instance_dir"],
+                task["project_type"], task["version_id"], self,
+            )
+            task["worker"] = worker
+            relay = ModInstallTaskRelay(self)
+            task["relay"] = relay
+            relay.result.connect(self._mod_install_worker_result)
+            relay.progress.connect(self._mod_install_progress)
+            relay.finished.connect(self._mod_install_worker_finished)
+            worker.completed.connect(lambda paths, key=task_id, bridge=relay: bridge.result.emit(key, paths, ""))
+            worker.failed.connect(lambda message, key=task_id, bridge=relay: bridge.result.emit(key, None, message))
+            worker.progress.connect(lambda message, key=task_id, bridge=relay: bridge.progress.emit(key, str(message)))
+            worker.finished.connect(lambda key=task_id, bridge=relay: bridge.finished.emit(key))
+            self._mod_install_active[task_id] = worker
+            self._retain_worker(worker)
+            self.mod_install_worker = worker
+            if task.get("profile_id") == self.catalog_profile_id:
+                self.mod_catalog_widget.set_project_state(task["project_id"], "downloading", "Скачивание")
+            worker.start()
+
+    def _mod_install_progress(self, task_id: str, message: str):
+        task = self._mod_install_tasks.get(task_id)
+        if not task:
             return
-        profile_id = self._mod_install_profile_id or self.active_profile_id
-        profile = self.profile_manager.get(profile_id)
-        if self._mod_install_project_type == "mod" and paths:
+        if task.get("project_type") == "modpack" or task.get("profile_id") == self.catalog_profile_id:
+            self.mod_catalog_widget.set_project_state(task["project_id"], "downloading", str(message)[:70])
+        self.mod_status_label.setText(str(message))
+
+    def _mod_install_worker_result(self, task_id: str, paths, error: str):
+        task = self._mod_install_tasks.get(task_id)
+        if not task:
+            return
+        task["paths"] = list(paths or []) if error == "" else None
+        task["error"] = str(error or "")
+
+    def _write_modrinth_install_metadata(self, task: dict, paths: list[str]):
+        if not task.get("profile_id") or not paths:
+            return
+        instance = self.profile_manager.instance_dir(str(task["profile_id"])).resolve()
+        metadata_path = instance / ".fiercy" / "modrinth-installed.json"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        old = {}
+        if metadata_path.is_file():
             try:
-                instance = self.profile_manager.instance_dir(profile_id)
-                metadata_path = instance / ".fiercy" / "modrinth-installed.json"
-                metadata_path.parent.mkdir(parents=True, exist_ok=True)
-                metadata = {}
-                if metadata_path.is_file():
-                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                project_data = dict(getattr(self, "_mod_install_project", {}) or {})
-                project_data.setdefault("project_id", project_data.get("id", ""))
-                project_data.setdefault("title", self._mod_install_project_name)
-                for path in paths:
-                    metadata[Path(path).name] = project_data
-                metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                log.exception("Не удалось сохранить связь установленного мода с Modrinth")
-        if profile_id == self.active_profile_id:
-            self._refresh_mod_list()
-        names = ", ".join(Path(path).name for path in paths)
-        profile_name = profile.get("name", "сборки") if profile else "сборки"
-        self.mod_status_label.setText(f"Установлено в «{profile_name}»: {names}")
-        self._notify("Контент установлен", f"{self._mod_install_project_name}\nСборка: {profile_name}\n{names}", "success")
+                old = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                old = {}
+        if isinstance(old, dict) and isinstance(old.get("files"), dict):
+            files = dict(old["files"])
+        elif isinstance(old, dict):
+            files = {}
+            # Миграция старого формата filename -> project data.
+            for filename, record in old.items():
+                if filename == "schema" or not isinstance(record, dict):
+                    continue
+                file_type = str(record.get("project_type", "mod"))
+                folder = {"mod": "mods", "resourcepack": "resourcepacks", "shader": "shaderpacks"}.get(file_type, "mods")
+                files[f"{folder}/{Path(str(filename)).name}"] = dict(record)
+        else:
+            files = {}
+        project_data = dict(task.get("project", {}) or {})
+        project_data.update({
+            "project_id": task["project_id"],
+            "title": task["project_name"],
+            "project_type": task["project_type"],
+        })
+        for raw_path in paths:
+            source_path = Path(raw_path)
+            if source_path.is_symlink() or not source_path.is_file():
+                continue
+            file_path = source_path.resolve()
+            try:
+                relative = file_path.relative_to(instance).as_posix()
+            except ValueError:
+                log.warning("Пропущен файл Modrinth вне папки профиля: %s", file_path)
+                continue
+            files[relative] = project_data
+        payload = {"schema": 2, "files": files}
+        temp_path = metadata_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temp_path, metadata_path)
+
+    def _mod_install_worker_finished(self, task_id: str):
+        task = self._mod_install_tasks.pop(task_id, None)
+        worker = self._mod_install_active.pop(task_id, None)
+        if self.mod_install_worker is worker:
+            self.mod_install_worker = next(iter(self._mod_install_active.values()), None)
+        if worker is not None:
+            worker.deleteLater()
+        if task is not None and task.get("relay") is not None:
+            task["relay"].deleteLater()
+        if task is None:
+            self._start_next_mod_installations()
+            return
+        if task.get("error"):
+            if task.get("project_type") == "modpack" or task.get("profile_id") == self.catalog_profile_id:
+                self.mod_catalog_widget.set_project_state(task["project_id"], "failed", "Не удалось скачать")
+            message = f"Не удалось установить «{task['project_name']}»: {task['error']}"
+            self.mod_status_label.setText(message)
+            self._notify("Не удалось установить мод", message, "error", 7500)
+        else:
+            paths = list(task.get("paths") or [])
+            if task["project_type"] == "modpack" and paths:
+                self.mod_catalog_widget.set_project_state(task["project_id"], "idle")
+                self._start_downloaded_modpack_import(str(paths[0]), "")
+            elif paths:
+                try:
+                    self._write_modrinth_install_metadata(task, paths)
+                except Exception:
+                    log.exception("Не удалось сохранить связь установленных файлов с Modrinth")
+                if task["profile_id"] == self.catalog_profile_id:
+                    self._refresh_catalog_project_states()
+                if task["profile_id"] == self.active_profile_id:
+                    self._refresh_mod_list()
+                names = ", ".join(Path(path).name for path in paths)
+                profile_name = task.get("profile_name") or "выбранную папку"
+                self.mod_status_label.setText(f"Установлено в «{profile_name}»: {names}")
+                self._notify("Контент установлен", f"{task['project_name']}\nСборка: {profile_name}\n{names}", "success")
+            else:
+                self.mod_catalog_widget.set_project_state(task["project_id"], "failed", "Нет файлов")
+        self._start_next_mod_installations()
+
+    def remove_modrinth_project(self, project: dict):
+        profile = self._catalog_target_profile()
+        if not profile:
+            self._notify("Сборка не выбрана", "Выбери сборку в верхней части каталога.", "warning")
+            return
+        project_id = str(project.get("project_id", ""))
+        if not project_id:
+            return
+        answer = QMessageBox.question(
+            self, "Удалить дополнение",
+            f"Удалить файлы «{project.get('title', project_id)}» из сборки «{profile.get('name', '')}»?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        instance = self.profile_manager.instance_dir(str(profile["id"])).resolve()
+        metadata_path = instance / ".fiercy" / "modrinth-installed.json"
+        if not metadata_path.is_file():
+            self._notify("Нет данных об установке", "Этот файл не был установлен через каталог Modrinth.", "info")
+            return
+        try:
+            data = json.loads(metadata_path.read_text(encoding="utf-8"))
+            raw_files = data.get("files", {}) if isinstance(data, dict) else {}
+            if not isinstance(raw_files, dict):
+                raw_files = {}
+            if not raw_files and isinstance(data, dict):
+                # Совместимость с ранним форматом: filename -> project metadata.
+                for filename, record in data.items():
+                    if filename == "schema" or not isinstance(record, dict):
+                        continue
+                    folder = {"mod": "mods", "resourcepack": "resourcepacks", "shader": "shaderpacks"}.get(
+                        str(record.get("project_type", "mod")), "mods")
+                    raw_files[f"{folder}/{Path(str(filename)).name}"] = record
+            removed = []
+            kept = {}
+            for relative, record in raw_files.items():
+                if not isinstance(record, dict) or str(record.get("project_id", "")) != project_id:
+                    kept[relative] = record
+                    continue
+                rel_path = Path(str(relative))
+                if rel_path.is_absolute() or ".." in rel_path.parts or not rel_path.parts or rel_path.parts[0] not in {"mods", "resourcepacks", "shaderpacks"}:
+                    kept[relative] = record
+                    continue
+                candidate = instance / rel_path
+                if candidate.is_symlink():
+                    kept[relative] = record
+                    continue
+                if not candidate.exists() and candidate.suffix.lower() == ".jar":
+                    disabled_candidate = candidate.with_name(candidate.name + ".disabled")
+                    if disabled_candidate.exists() and not disabled_candidate.is_symlink():
+                        candidate = disabled_candidate
+                resolved = candidate.resolve()
+                if instance not in resolved.parents or not resolved.is_file():
+                    kept[relative] = record
+                    continue
+                resolved.unlink()
+                removed.append(str(relative))
+            if not removed:
+                self._notify("Файлы не найдены", "В выбранной сборке не нашлись файлы этого проекта.", "warning")
+                return
+            temp = metadata_path.with_suffix(".tmp")
+            temp.write_text(json.dumps({"schema": 2, "files": kept}, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temp, metadata_path)
+            self._refresh_catalog_project_states()
+            if str(profile["id"]) == self.active_profile_id:
+                self._refresh_mod_list()
+            self.mod_status_label.setText(f"Удалено файлов проекта «{project.get('title', project_id)}»: {len(removed)}")
+            self._notify("Проект удалён", f"Удалено файлов: {len(removed)}", "success")
+        except Exception as exc:
+            log.exception("Не удалось удалить проект Modrinth")
+            self._notify("Не удалось удалить проект", str(exc), "error", 7000)
 
     def _start_downloaded_modpack_import(self, archive_path: str, profile_id: str = ""):
         archive = Path(archive_path)
@@ -3022,6 +3357,15 @@ class LauncherWindow(QMainWindow):
         if not self._has_active_profile():
             return
         profile = self._active_profile()
+        pending_for_profile = [task for task in self._mod_install_tasks.values()
+                               if str(task.get("profile_id", "")) == str(profile.get("id", ""))]
+        if pending_for_profile:
+            self._notify(
+                "Сборка используется загрузчиком",
+                f"В этой сборке ещё устанавливаются дополнения ({len(pending_for_profile)} задач). "
+                "Дождись завершения загрузок, затем повтори удаление.", "warning", 7000,
+            )
+            return
         from PyQt5.QtWidgets import QDialog, QDialogButtonBox
         dialog = QDialog(self)
         dialog.setWindowTitle("Удалить сборку")
@@ -3405,6 +3749,7 @@ class LauncherWindow(QMainWindow):
                                                        self.banner_worker,
                                                        self.mod_search_worker, self.mod_details_worker,
                                                        self.mod_install_worker, self.modpack_worker,
+                                                       *list(self._mod_install_active.values()),
                                                        *list(self.mod_image_workers),
                                                        self.local_import_worker, self.storage_worker]
                   if worker is not None and worker.isRunning()]

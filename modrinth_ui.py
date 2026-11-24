@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QFrame, QTextBrowser, QTextEdit, QScrollArea, QWidget, QDialogButtonBox, QSizePolicy,
 )
-from ui_controls import WheelSafeComboBox
+from ui_controls import WheelSafeComboBox, SmoothScrollArea
 
 
 def _number(value) -> str:
@@ -26,14 +26,17 @@ def _number(value) -> str:
 class ModrinthProjectCard(QFrame):
     detailsRequested = pyqtSignal(dict)
     installRequested = pyqtSignal(dict)
+    removeRequested = pyqtSignal(dict)
 
     def __init__(self, project: dict, parent=None):
         super().__init__(parent)
         self.project = dict(project)
+        self._requires_loader = bool(project.get("requires_loader"))
+        self._state = "idle"
         self.setObjectName("ModrinthProjectCard")
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(205)
-        self.setMinimumHeight(178)
+        self.setMinimumHeight(184)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         root = QVBoxLayout(self)
@@ -59,14 +62,8 @@ class ModrinthProjectCard(QFrame):
         identity.addWidget(self.title)
         author = str(project.get("author", ""))
         project_type = str(project.get("project_type", "mod")).lower()
-        type_names = {
-            "mod": "МОД",
-            "resourcepack": "РЕСУРСПАК",
-            "shader": "ШЕЙДЕР",
-            "modpack": "СБОРКА",
-        }
-        subtitle = " · ".join(part for part in (author, type_names.get(project_type, "MODRINTH")) if part)
-        self.author_label = QLabel(subtitle)
+        type_names = {"mod": "МОД", "resourcepack": "РЕСУРСПАК", "shader": "ШЕЙДЕР", "modpack": "СБОРКА"}
+        self.author_label = QLabel(" · ".join(part for part in (author, type_names.get(project_type, "MODRINTH")) if part))
         self.author_label.setObjectName("ModrinthProjectMeta")
         self.author_label.setWordWrap(True)
         self.author_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -90,29 +87,70 @@ class ModrinthProjectCard(QFrame):
         root.addWidget(self.categories)
 
         footer = QHBoxLayout()
-        footer.setSpacing(8)
-        stats = f"↓ {_number(project.get('downloads'))}    ♥ {_number(project.get('follows'))}"
-        self.stats = QLabel(stats)
+        footer.setSpacing(6)
+        self.stats = QLabel(f"↓ {_number(project.get('downloads'))}    ♥ {_number(project.get('follows'))}")
         self.stats.setObjectName("ModrinthProjectMeta")
         self.stats.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         footer.addWidget(self.stats, 1)
-        self.install_button = QPushButton("Установить")
+        self.state_label = QLabel("")
+        self.state_label.setObjectName("ModrinthProjectState")
+        self.state_label.setMinimumWidth(1)
+        self.state_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        footer.addWidget(self.state_label)
+        self.install_button = QPushButton("Скачать")
         self.install_button.setObjectName("PrimaryButton")
         self.install_button.setCursor(Qt.PointingHandCursor)
-        self.install_button.setMinimumWidth(104)
+        self.install_button.setMinimumWidth(84)
         self.install_button.setMaximumHeight(34)
-        if project.get("requires_loader"):
-            self.install_button.setText("Нужен загрузчик")
-            self.install_button.setEnabled(False)
-            self.install_button.setToolTip("Выбери Fabric, Forge, NeoForge или Quilt в параметрах сборки")
+        self.install_button.setFocusPolicy(Qt.NoFocus)
         self.install_button.clicked.connect(lambda: self.installRequested.emit(dict(self.project)))
         footer.addWidget(self.install_button)
+        self.remove_button = QPushButton("Удалить")
+        self.remove_button.setObjectName("DangerButton")
+        self.remove_button.setCursor(Qt.PointingHandCursor)
+        self.remove_button.setMinimumWidth(72)
+        self.remove_button.setMaximumHeight(34)
+        self.remove_button.setFocusPolicy(Qt.NoFocus)
+        self.remove_button.clicked.connect(lambda: self.removeRequested.emit(dict(self.project)))
+        self.remove_button.hide()
+        footer.addWidget(self.remove_button)
         root.addLayout(footer)
+        self.set_install_state("idle")
+
+    def set_install_state(self, state: str, message: str = ""):
+        state = str(state or "idle")
+        self._state = state
+        labels = {
+            "idle": "Скачать",
+            "queued": "В очереди…",
+            "downloading": "Скачивание…",
+            "installed": "Установлено",
+            "failed": "Повторить",
+        }
+        self.install_button.setText(labels.get(state, "Скачать"))
+        button_names = {
+            "idle": "PrimaryButton",
+            "queued": "ModrinthQueuedButton",
+            "downloading": "ModrinthDownloadingButton",
+            "installed": "ModrinthInstalledButton",
+            "failed": "ModrinthRetryButton",
+        }
+        self.install_button.setObjectName(button_names.get(state, "PrimaryButton"))
+        self.install_button.style().unpolish(self.install_button)
+        self.install_button.style().polish(self.install_button)
+        self.remove_button.setVisible(state == "installed")
+        self.install_button.setEnabled(state in {"idle", "failed"} and not self._requires_loader)
+        self.install_button.setToolTip(message or ("Для мода сначала выбери Fabric, Forge, NeoForge или Quilt." if self._requires_loader else ""))
+        self.state_label.setText(message if state in {"queued", "downloading", "failed"} else ("Уже в сборке" if state == "installed" else ""))
+        self.state_label.setToolTip(message)
+        self.state_label.setProperty("state", state)
+        self.state_label.style().unpolish(self.state_label)
+        self.state_label.style().polish(self.state_label)
 
     def set_icon_bytes(self, payload: bytes):
         pixmap = QPixmap()
         if payload and pixmap.loadFromData(payload):
-            self.icon.setPixmap(pixmap.scaled(48, 48, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            self.icon.setPixmap(pixmap.scaled(48, 48, Qt.KeepAspectRatioByExpanding, Qt.FastTransformation))
             self.icon.setText("")
 
     def mouseReleaseEvent(self, event):
@@ -128,6 +166,7 @@ class ModrinthCatalogWidget(QWidget):
 
     projectDetailsRequested = pyqtSignal(dict)
     installRequested = pyqtSignal(dict)
+    removeRequested = pyqtSignal(dict)
     loadMoreRequested = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -136,7 +175,7 @@ class ModrinthCatalogWidget(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
-        self.scroll = QScrollArea()
+        self.scroll = SmoothScrollArea()
         self.scroll.setObjectName("ModrinthCatalogScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
@@ -180,6 +219,26 @@ class ModrinthCatalogWidget(QWidget):
         self._column_count = 0
         self._has_more = False
         self._auto_load_pending = False
+
+    def set_project_state(self, project_id: str, state: str, message: str = ""):
+        project_id = str(project_id or "")
+        for card in self.cards:
+            if str(card.project.get("project_id", "")) == project_id:
+                card.set_install_state(state, message)
+
+    def set_installed_projects(self, states: dict[str, bool]):
+        # Backward-compatible helper used by older call sites.
+        self.set_project_states({
+            project_id: (("installed", "Уже в сборке") if installed else ("idle", ""))
+            for project_id, installed in states.items()
+        })
+
+    def set_project_states(self, states: dict[str, tuple[str, str]]):
+        """Обновляет все карточки относительно выбранной целевой сборки."""
+        for card in self.cards:
+            project_id = str(card.project.get("project_id", ""))
+            state, message = states.get(project_id, ("idle", ""))
+            card.set_install_state(state, message)
 
     def _check_auto_load(self, value: int):
         if not self._has_more or self._loading or self._auto_load_pending:
@@ -225,6 +284,7 @@ class ModrinthCatalogWidget(QWidget):
             card = ModrinthProjectCard(project, self.content)
             card.detailsRequested.connect(self.projectDetailsRequested)
             card.installRequested.connect(self.installRequested)
+            card.removeRequested.connect(self.removeRequested)
             self.cards.append(card)
             added.append(card)
         self._total_hits = max(self._total_hits, int(total_hits or 0))
@@ -318,7 +378,7 @@ class ModrinthImagePreviewDialog(QDialog):
         self.setMinimumSize(560, 400)
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         image = QLabel()
@@ -357,7 +417,7 @@ class ModrinthProjectDetailsDialog(QDialog):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
 
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setObjectName("ModrinthDetailsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -402,7 +462,7 @@ class ModrinthProjectDetailsDialog(QDialog):
             gallery_title = QLabel("Галерея проекта")
             gallery_title.setObjectName("SectionTitle")
             content_layout.addWidget(gallery_title)
-            self.gallery_scroll = QScrollArea()
+            self.gallery_scroll = SmoothScrollArea()
             self.gallery_scroll.setObjectName("ModrinthGalleryScroll")
             self.gallery_scroll.setWidgetResizable(True)
             self.gallery_scroll.setFrameShape(QFrame.NoFrame)

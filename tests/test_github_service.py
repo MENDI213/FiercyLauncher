@@ -43,15 +43,15 @@ class FakeResponse:
 def test_release_list_supports_prereleases(monkeypatch):
     calls = []
     release = {
-        "tag_name": "v1.0.0.5-beta.1",
+        "tag_name": "v1.0.0.9-beta.1",
         "draft": False,
         "body": "beta",
-        "html_url": "https://github.com/MENDI213/FiercyLauncher/releases/tag/v1.0.0.5-beta.1",
+        "html_url": "https://github.com/MENDI213/FiercyLauncher/releases/tag/v1.0.0.9-beta.1",
         "assets": [{
             "name": "FiercyLauncher-source.zip",
             "size": 1000,
             "digest": "sha256:" + "a" * 64,
-            "browser_download_url": "https://github.com/MENDI213/FiercyLauncher/releases/download/v1.0.0.5-beta.1/FiercyLauncher-source.zip",
+            "browser_download_url": "https://github.com/MENDI213/FiercyLauncher/releases/download/v1.0.0.9-beta.1/FiercyLauncher-source.zip",
         }],
     }
 
@@ -63,7 +63,7 @@ def test_release_list_supports_prereleases(monkeypatch):
     result = github_service.check_latest_release(
         "https://api.github.com/repos/MENDI213/FiercyLauncher/releases?per_page=20"
     )
-    assert result["latest_version"] == "1.0.0.5-beta.1"
+    assert result["latest_version"] == "1.0.0.9-beta.1"
     assert result["update_available"] is True
     assert calls[0][1]["allow_redirects"] is False
 

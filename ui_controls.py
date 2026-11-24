@@ -1,21 +1,92 @@
 """Управляемые элементы Qt без изменения значений от колёсика мыши."""
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt5.QtWidgets import (
-    QAbstractItemView,
+    QAbstractItemView, QScrollArea,
     QApplication,
     QComboBox,
     QDoubleSpinBox,
     QFontComboBox,
     QFrame,
     QListView,
+    QListWidget,
     QProxyStyle,
     QSpinBox,
     QStyle,
     QSlider,
     QTabBar,
 )
+
+
+class SmoothScrollArea(QScrollArea):
+    """Плавная прокрутка колёсиком без тяжёлых анимаций всего окна."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._wheel_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
+        self._wheel_animation.setDuration(155)
+        self._wheel_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._wheel_target = 0
+        self.setFrameShape(QFrame.NoFrame)
+        self.setWidgetResizable(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.verticalScrollBar().setSingleStep(24)
+
+    def wheelEvent(self, event):
+        bar = self.verticalScrollBar()
+        delta = event.pixelDelta().y()
+        if delta:
+            distance = float(delta) * 1.25
+        else:
+            angle = event.angleDelta().y()
+            if not angle:
+                event.ignore()
+                return
+            distance = (float(angle) / 120.0) * 112.0
+        current = int(bar.value())
+        if self._wheel_animation.state() == QPropertyAnimation.Running:
+            current = int(self._wheel_animation.currentValue())
+            self._wheel_animation.stop()
+        target = int(max(bar.minimum(), min(bar.maximum(), current - distance)))
+        if target == current:
+            event.accept()
+            return
+        self._wheel_animation.setStartValue(current)
+        self._wheel_animation.setEndValue(target)
+        self._wheel_animation.start()
+        event.accept()
+
+
+class SmoothListWidget(QListWidget):
+    """QListWidget с попиксельной анимированной прокруткой колёсиком."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.verticalScrollBar().setSingleStep(22)
+        self._wheel_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
+        self._wheel_animation.setDuration(145)
+        self._wheel_animation.setEasingCurve(QEasingCurve.OutCubic)
+
+    def wheelEvent(self, event):
+        bar = self.verticalScrollBar()
+        delta = event.pixelDelta().y()
+        distance = float(delta) * 1.15 if delta else (float(event.angleDelta().y()) / 120.0) * 96.0
+        if not distance:
+            event.ignore()
+            return
+        current = int(bar.value())
+        if self._wheel_animation.state() == QPropertyAnimation.Running:
+            current = int(self._wheel_animation.currentValue())
+            self._wheel_animation.stop()
+        target = int(max(bar.minimum(), min(bar.maximum(), current - distance)))
+        self._wheel_animation.setStartValue(current)
+        self._wheel_animation.setEndValue(target)
+        self._wheel_animation.start()
+        event.accept()
 
 
 class CompactPopupProxyStyle(QProxyStyle):

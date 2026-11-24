@@ -7,6 +7,8 @@ import sys
 import threading
 from pathlib import Path
 
+from tls_bootstrap import configure_tls_bundle
+
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, QSettings
 from PyQt5.QtGui import QColor, QFont, QIcon
 from PyQt5.QtWidgets import (
@@ -345,6 +347,20 @@ class Application:
 
 def main() -> int:
     configure_logging()
+    try:
+        ca_bundle = configure_tls_bundle()
+        log.info("HTTPS CA bundle: %s", ca_bundle)
+    except Exception as exc:
+        # Fail closed: do not disable certificate verification when the package is broken.
+        log.exception("Не удалось подготовить HTTPS-сертификаты")
+        from PyQt5.QtWidgets import QMessageBox
+        app = QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.critical(
+            None, "Не удалось запустить FiercyLauncher",
+            "В комплекте лаунчера отсутствуют HTTPS-сертификаты. "
+            "Переустанови FiercyLauncher из полного официального архива.\n\n" + str(exc)[:1400],
+        )
+        return 2
     # Qt 5 high-DPI support must be enabled before QApplication is created.
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)

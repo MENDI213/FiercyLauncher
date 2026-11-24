@@ -2,10 +2,10 @@
   "schema": 1,
   "launcher": {
     "name": "FiercyLauncher",
-    "latest_version": "1.0.0.4",
-    "minimum_version": "1.0.0.3",
+    "latest_version": "1.0.0.8",
+    "minimum_version": "1.0.0.8",
     "maintenance_mode": false,
-    "announcement": "Вышла бета-версия FiercyLauncher 1.0.0.4. Спасибо, что помогаете проверить лаунчер.",
+    "announcement": "Вышло исправление FiercyLauncher 1.0.0.8. Восстановлена безопасная HTTPS-загрузка обновлений, версий Minecraft и дополнений. Если у тебя уже установлена предыдущая версия и обновления не проверяются, скачай новый установщик с официальной страницы релизов.",
     "recommended_minecraft_version": "1.21.1",
     "recommended_loader": "neoforge"
   },

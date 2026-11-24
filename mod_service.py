@@ -9,6 +9,7 @@ import re
 import shutil
 import time
 import tempfile
+import uuid
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urljoin
 
@@ -395,13 +396,37 @@ class ModrinthInstallWorker(QThread):
         else:
             raise RuntimeError("Этот тип проекта пока не поддерживается для установки.")
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / filename
-        if target.exists():
-            target = target_dir / f"{target.stem}-{str(version.get('id', 'version'))[:8]}{target.suffix}"
-        self.progress.emit(f"Скачивание {filename}…")
-        saved = _download_verified(primary["url"], target, primary.get("hashes", {}),
-                                   max_size=1024 * 1024 * 1024)
-        return [str(saved)]
+        version_token = re.sub(r"[^A-Za-z0-9]", "", str(version.get("id") or self.version_id or self.project_id))[:10]
+        stem, suffix = Path(filename).stem, Path(filename).suffix
+        target = None
+        reservation_fd = None
+        # Резервируем итоговое имя через O_EXCL: несколько параллельных
+        # установок не смогут перезаписать файл друг друга.
+        for attempt in range(32):
+            if attempt == 0:
+                candidate_name = filename
+            elif attempt == 1:
+                candidate_name = f"{stem}-{version_token or uuid.uuid4().hex[:8]}{suffix}"
+            else:
+                candidate_name = f"{stem}-{version_token or 'version'}-{uuid.uuid4().hex[:6]}{suffix}"
+            candidate = target_dir / candidate_name
+            try:
+                reservation_fd = os.open(str(candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                target = candidate
+                break
+            except FileExistsError:
+                continue
+        if target is None or reservation_fd is None:
+            raise RuntimeError(f"Не удалось подобрать свободное имя файла для {filename}.")
+        os.close(reservation_fd)
+        self.progress.emit(f"Скачивание {target.name}…")
+        try:
+            saved = _download_verified(primary["url"], target, primary.get("hashes", {}),
+                                       max_size=1024 * 1024 * 1024)
+            return [str(saved)]
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
 
     def run(self):
         try:

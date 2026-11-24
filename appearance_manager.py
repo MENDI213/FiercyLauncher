@@ -271,6 +271,14 @@ QLabel#ModrinthProjectTitle {{ color: {p['text']}; font-size: 11pt; font-weight:
 QLabel#ModrinthProjectDescription {{ color: {p['muted']}; font-size: 9pt; }}
 QLabel#ModrinthProjectMeta {{ color: {p['muted']}; font-size: 8pt; }}
 QLabel#ModrinthProjectTags {{ color: {p['accent2']}; font-size: 8pt; font-weight: 700; }}
+QLabel#ModrinthProjectState[state="queued"] {{ color: {p['accent2']}; font-size: 8pt; font-weight: 800; }}
+QLabel#ModrinthProjectState[state="downloading"] {{ color: {p['accent']}; font-size: 8pt; font-weight: 800; }}
+QLabel#ModrinthProjectState[state="installed"] {{ color: {p['success']}; font-size: 8pt; font-weight: 800; }}
+QLabel#ModrinthProjectState[state="failed"] {{ color: {p['danger']}; font-size: 8pt; font-weight: 800; }}
+QPushButton#ModrinthQueuedButton {{ color: {p['text']}; background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
+QPushButton#ModrinthDownloadingButton {{ color: {p['text']}; background: {p['panel_alt']}; border: 1px solid {p['accent2']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
+QPushButton#ModrinthInstalledButton {{ color: {p['success']}; background: {p['panel_alt']}; border: 1px solid {p['success']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 900; }}
+QPushButton#ModrinthRetryButton {{ color: {p['danger']}; background: {p['panel_alt']}; border: 1px solid {p['danger']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
 QWidget#ModrinthCatalogContent {{ background: transparent; }}
 QScrollArea#ModrinthCatalogScroll {{ background: transparent; border: 0; }}
 QTabWidget#ProfileContentTabs::pane {{ border: 0; background: {p['panel']}; top: 0; }}
