@@ -10,12 +10,15 @@ import shutil
 import time
 import tempfile
 import uuid
+import threading
+import time
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urljoin
 
 import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from update_download import DownloadCancelled
 from version import USER_AGENT
 
 log = logging.getLogger("fiercy.mods")
@@ -106,7 +109,9 @@ def _safe_filename(name: str) -> str:
 
 
 def _download_verified(url: str, destination: Path, hashes: dict | None = None,
-                       max_size: int = 500 * 1024 * 1024) -> Path:
+                       max_size: int = 500 * 1024 * 1024,
+                       cancel_event: threading.Event | None = None,
+                       progress=None, download_control=None, rate_limiter=None) -> Path:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname:
         raise ValueError("Мод должен загружаться по защищённой HTTPS-ссылке.")
@@ -124,7 +129,11 @@ def _download_verified(url: str, destination: Path, hashes: dict | None = None,
     fd, temp_name = tempfile.mkstemp(prefix=".fiercy-download-", suffix=".part", dir=str(destination.parent))
     temp = Path(temp_name)
     written = 0
+    started = time.monotonic()
+    last_report = started
     try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем.")
         with _safe_modrinth_get(url, stream=True, timeout=(10, 90),
                                headers={"User-Agent": USER_AGENT}) as response:
             response.raise_for_status()
@@ -141,14 +150,31 @@ def _download_verified(url: str, destination: Path, hashes: dict | None = None,
             with os.fdopen(fd, "wb") as output:
                 fd = -1
                 for chunk in response.iter_content(256 * 1024):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise DownloadCancelled("Загрузка отменена пользователем.")
                     if not chunk:
                         continue
+                    if download_control is not None:
+                        download_control.checkpoint(len(chunk), rate_limiter)
                     written += len(chunk)
                     if written > max_size:
                         raise ValueError("Файл мода превышает лимит 500 МБ.")
                     output.write(chunk)
                     for digest, _expected in digesters.values():
                         digest.update(chunk)
+                    now = time.monotonic()
+                    if progress and (now - last_report >= 0.2 or (total and written >= total)):
+                        speed = written / max(now - started, 0.001) / 1048576
+                        amount = (f"{written / 1048576:.1f}/{total / 1048576:.1f} МБ"
+                                  if total else f"{written / 1048576:.1f} МБ")
+                        pct_label = f"{int(written * 100 / total)}% · " if total else ""
+                        progress(f"{pct_label}{amount} · {speed:.2f} МБ/с")
+                        last_report = now
+        if progress:
+            elapsed = max(time.monotonic() - started, 0.001)
+            amount = (f"{written / 1048576:.1f}/{total / 1048576:.1f} МБ"
+                      if total else f"{written / 1048576:.1f} МБ")
+            progress(f"100% · {amount} · {written / elapsed / 1048576:.2f} МБ/с")
         for algorithm, (digest, expected) in digesters.items():
             if digest.hexdigest().lower() != expected:
                 raise ValueError(f"Контрольная сумма {algorithm.upper()} не совпала для {destination.name}.")
@@ -264,6 +290,8 @@ class ModrinthProjectDetailsWorker(QThread):
                                     timeout=(8, 25), headers=headers)
             response.raise_for_status()
             project = response.json()
+            if not isinstance(project, dict) or str(project.get("id", self.project_id)) != self.project_id:
+                raise ValueError("Modrinth вернул неправильные данные проекта.")
             params = {}
             if self.game_version:
                 params["game_versions"] = json.dumps([self.game_version])
@@ -277,6 +305,7 @@ class ModrinthProjectDetailsWorker(QThread):
             versions = versions_response.json()
             if not isinstance(versions, list):
                 versions = []
+            versions = [item for item in versions if isinstance(item, dict)]
             self.loaded.emit({"project": project, "versions": versions})
         except Exception as exc:
             log.exception("Modrinth project details failed")
@@ -330,9 +359,12 @@ class ModrinthInstallWorker(QThread):
     completed = pyqtSignal(list)
     failed = pyqtSignal(str)
     progress = pyqtSignal(str)
+    warnings = pyqtSignal(list)
+    cancelled = pyqtSignal()
 
     def __init__(self, project_id: str, game_version: str, loader: str,
-                 instance_dir: str, project_type: str = "mod", version_id: str = "", parent=None):
+                 instance_dir: str, project_type: str = "mod", version_id: str = "", parent=None,
+                 download_control=None, rate_limiter=None):
         super().__init__(parent)
         self.project_id = str(project_id).strip()
         self.game_version = str(game_version).strip()
@@ -340,8 +372,33 @@ class ModrinthInstallWorker(QThread):
         self.instance_dir = Path(instance_dir)
         self.project_type = str(project_type or "mod").strip().lower()
         self.version_id = str(version_id or "").strip()
+        self.download_control = download_control
+        self.rate_limiter = rate_limiter
+        self.cancel_event = (download_control.cancel_event if download_control is not None
+                             else threading.Event())
+
+    def cancel(self) -> None:
+        if self.download_control is not None:
+            self.download_control.cancel()
+        else:
+            self.cancel_event.set()
+
+    def pause(self) -> None:
+        if self.download_control is not None:
+            self.download_control.pause()
+
+    def resume(self) -> None:
+        if self.download_control is not None:
+            self.download_control.resume()
+
+    def _check_cancelled(self) -> None:
+        if self.download_control is not None:
+            self.download_control.checkpoint(0, self.rate_limiter)
+        elif self.cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем.")
 
     def _request_version(self, dependency: dict) -> dict:
+        self._check_cancelled()
         version_id = str(dependency.get("version_id") or "").strip()
         project_id = str(dependency.get("project_id") or "").strip()
         headers = {"User-Agent": USER_AGENT}
@@ -373,6 +430,7 @@ class ModrinthInstallWorker(QThread):
         return next((item for item in versions if item.get("version_type") == "release"), versions[0])
 
     def _install_single_file(self, version: dict) -> list[str]:
+        self._check_cancelled()
         files = [f for f in version.get("files", []) if isinstance(f, dict) and f.get("url")]
         if not files:
             raise RuntimeError("У выбранной версии Modrinth нет файлов для установки.")
@@ -422,47 +480,92 @@ class ModrinthInstallWorker(QThread):
         self.progress.emit(f"Скачивание {target.name}…")
         try:
             saved = _download_verified(primary["url"], target, primary.get("hashes", {}),
-                                       max_size=1024 * 1024 * 1024)
+                                       max_size=1024 * 1024 * 1024,
+                                       cancel_event=self.cancel_event,
+                                       progress=lambda message: self.progress.emit(
+                                           f"{target.name}: {message}"
+                                       ), download_control=self.download_control,
+                                       rate_limiter=self.rate_limiter)
             return [str(saved)]
         except Exception:
             target.unlink(missing_ok=True)
             raise
 
     def run(self):
+        installed: list[str] = []
         try:
+            self._check_cancelled()
             if self.project_type not in {"mod", "resourcepack", "shader", "modpack"}:
                 raise RuntimeError("Неподдерживаемый тип проекта Modrinth.")
             if self.project_type == "mod":
-                queue = [{"version_id": self.version_id}] if self.version_id else [{"project_id": self.project_id}]
+                queue = [{"version_id": self.version_id, "_main_project": True}] if self.version_id else [
+                    {"project_id": self.project_id, "_main_project": True}
+                ]
                 seen: set[str] = set()
-                installed: list[str] = []
+                dependency_warnings: list[str] = []
                 while queue:
+                    self._check_cancelled()
                     if len(seen) >= 32:
-                        raise RuntimeError("У мода слишком много обязательных зависимостей (лимит 32).")
+                        dependency_warnings.append("Достигнут лимит 32 обязательных зависимостей; остальные пропущены.")
+                        break
                     dependency = queue.pop(0)
                     identity = str(dependency.get("version_id") or dependency.get("project_id") or "").strip()
                     if not identity or identity in seen:
                         continue
                     seen.add(identity)
-                    version = self._request_version(dependency)
+                    is_main = bool(dependency.get("_main_project"))
+                    try:
+                        version = self._request_version(dependency)
+                    except DownloadCancelled:
+                        raise
+                    except Exception as exc:
+                        if is_main:
+                            raise
+                        warning = f"Не удалось получить обязательную зависимость {identity}: {exc}"
+                        dependency_warnings.append(warning)
+                        self.progress.emit(f"Зависимость {identity} недоступна — продолжаем установку основного мода…")
+                        log.warning("Пропускаем недоступную зависимость Modrinth %s: %s", identity, exc)
+                        continue
                     version_id = str(version.get("id", ""))
                     if version_id:
                         seen.add(version_id)
-                    installed.extend(self._install_single_file(version))
+                    try:
+                        installed.extend(self._install_single_file(version))
+                    except DownloadCancelled:
+                        raise
+                    except Exception as exc:
+                        if is_main:
+                            raise
+                        warning = f"Не удалось скачать зависимость {identity}: {exc}"
+                        dependency_warnings.append(warning)
+                        self.progress.emit(f"Не удалось скачать зависимость {identity} — продолжаем…")
+                        log.warning("Пропускаем файл зависимости Modrinth %s: %s", identity, exc)
+                        continue
                     for child in version.get("dependencies", []):
                         if not isinstance(child, dict) or child.get("dependency_type") != "required":
                             continue
+                        child = dict(child)
+                        child["_required_dependency"] = True
                         child_id = str(child.get("version_id") or child.get("project_id") or "").strip()
                         if child_id and child_id not in seen:
                             queue.append(child)
                 if not installed:
-                    raise RuntimeError("Modrinth не вернул ни одного JAR-файла.")
+                    raise RuntimeError("Не удалось скачать основной файл мода Modrinth.")
+                if dependency_warnings:
+                    self.warnings.emit(dependency_warnings)
                 self.completed.emit(installed)
             else:
                 version = self._request_version({"version_id": self.version_id} if self.version_id else
                                                 {"project_id": self.project_id})
                 installed = self._install_single_file(version)
                 self.completed.emit(installed)
+        except DownloadCancelled:
+            for saved_path in installed:
+                try:
+                    Path(saved_path).unlink(missing_ok=True)
+                except OSError:
+                    log.warning("Не удалось удалить частично установленный файл: %s", saved_path)
+            self.cancelled.emit()
         except Exception as exc:
             log.exception("Modrinth install failed")
             self.failed.emit(str(exc))

@@ -65,7 +65,9 @@ DEFAULT_GEOMETRY = {
     "sidebar_width": 236,
     "titlebar_height": 66,
     "shadow_strength": 20,
+    "panel_opacity": 88,
     "font_family": "Segoe UI",
+    "background_image": "",
     "gradients": True,
     "background_gradient": True,
     "shadows": False,
@@ -133,6 +135,7 @@ class AppearanceManager:
         geometry["sidebar_width"] = max(190, min(330, geometry["sidebar_width"]))
         geometry["titlebar_height"] = max(48, min(100, geometry["titlebar_height"]))
         geometry["shadow_strength"] = max(0, min(100, geometry["shadow_strength"]))
+        geometry["panel_opacity"] = max(35, min(100, geometry["panel_opacity"]))
         return {"mode": mode, "palette": palette, "geometry": geometry}
 
     def save(self, mode: str, palette: dict[str, str], geometry: dict[str, Any]) -> None:
@@ -158,6 +161,18 @@ class AppearanceManager:
         r_window, r_card, r_button, r_control = (
             g["window_radius"], g["card_radius"], g["button_radius"], g["control_radius"]
         )
+        opacity = max(35, min(100, int(g.get("panel_opacity", 88))))
+
+        def rgba(value: str, percent: int = opacity) -> str:
+            color = QColor(str(value))
+            alpha = max(0, min(255, round(255 * percent / 100)))
+            return f"rgba({color.red()},{color.green()},{color.blue()},{alpha})"
+
+        window_fill = rgba(p["window"])
+        sidebar_bg = rgba(p["sidebar"])
+        panel_bg = rgba(p["panel"])
+        panel_alt_bg = rgba(p["panel_alt"])
+        input_bg = rgba(p["input"], max(opacity, 50))
         if g["gradients"]:
             button_bg = (f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
                          f"stop:0 {p['accent']}, stop:1 {p['accent2']})")
@@ -168,138 +183,153 @@ class AppearanceManager:
             button_hover = p["accent2"]
         if g["background_gradient"]:
             window_bg = (f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-                         f"stop:0 {p['window']}, stop:1 {p['panel_alt']})")
+                         f"stop:0 {window_fill}, stop:1 {panel_alt_bg})")
             hero_bg = (f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-                        f"stop:0 {p['panel_alt']}, stop:0.58 {p['panel']}, stop:1 {p['sidebar']})")
+                        f"stop:0 {panel_alt_bg}, stop:0.58 {panel_bg}, stop:1 {sidebar_bg})")
         else:
-            window_bg, hero_bg = p["window"], p["panel"]
+            window_bg, hero_bg = window_fill, panel_bg
         shadow = "rgba(0,0,0,105)" if g["shadows"] and not g.get("low_effects", False) else "transparent"
         return f"""
 * {{ font-family: '{font}', 'Segoe UI', sans-serif; font-size: {round(10*scale)}pt; }}
 QWidget {{ color: {p['text']}; background: transparent; }}
 QMainWindow {{ background: transparent; }}
 #WindowRoot {{ background: {window_bg}; border: 1px solid {p['border']}; border-radius: {r_window}px; }}
-#TitleBar {{ background: {p['sidebar']}; border-bottom: 1px solid {p['border']}; border-top-left-radius: {r_window}px; border-top-right-radius: {r_window}px; }}
-#BrandMark {{ background: {button_bg}; color: {p['button_text']}; border-radius: 12px; font-size: 17pt; font-weight: 900; }}
-#WindowTitle {{ color: {p['text']}; font-size: 10pt; font-weight: 900; letter-spacing: 1.5px; }}
-#WindowSubtitle {{ color: {p['muted']}; font-size: 8pt; }}
-QToolButton#WindowControl {{ background: {p['panel_alt']}; color: {p['text']}; border: 1px solid {p['border']}; border-radius: {r_button}px; min-width: 46px; min-height: 38px; font-size: 14pt; }}
+#TitleBar {{ background: {sidebar_bg}; border-bottom: 1px solid {p['border']}; border-top-left-radius: {r_window}px; border-top-right-radius: {r_window}px; }}
+#BrandMark {{ background: {button_bg}; color: {p['button_text']}; border-radius: 12px; font-size: {round(17*scale)}pt; font-weight: 900; }}
+#WindowTitle {{ color: {p['text']}; font-size: {round(10*scale)}pt; font-weight: 900; letter-spacing: 1.5px; }}
+#WindowSubtitle {{ color: {p['muted']}; font-size: {round(8*scale)}pt; }}
+QToolButton#NotificationBell {{ background: {panel_alt_bg}; color: {p['accent2']}; border: 1px solid {p['border']}; border-radius: {r_button}px; min-width: 54px; min-height: 36px; padding: 0 9px; font-weight: 800; }}
+QToolButton#NotificationBell:hover {{ background: {p['accent']}; color: {p['button_text']}; border-color: {p['accent2']}; }}
+QToolButton#WindowControl {{ background: {panel_alt_bg}; color: {p['text']}; border: 1px solid {p['border']}; border-radius: {r_button}px; min-width: 46px; min-height: 38px; font-size: {round(14*scale)}pt; }}
 QToolButton#WindowControl:hover {{ background: {p['accent']}; color: {p['button_text']}; }}
-QToolButton#CloseControl {{ background: transparent; color: {p['text']}; border: 1px solid transparent; border-radius: {r_button}px; min-width: 46px; min-height: 38px; font-size: 16pt; }}
+QToolButton#CloseControl {{ background: transparent; color: {p['text']}; border: 1px solid transparent; border-radius: {r_button}px; min-width: 46px; min-height: 38px; font-size: {round(16*scale)}pt; }}
 QToolButton#CloseControl:hover {{ background: {p['danger']}; color: #FFFFFF; }}
-#Sidebar {{ background: {p['sidebar']}; border-right: 1px solid {p['border']}; }}
+#Sidebar {{ background: {sidebar_bg}; border-right: 1px solid {p['border']}; border-bottom-left-radius: {r_window}px; }}
 #NavButton {{ text-align: left; padding: {pad+3}px {pad+5}px; border: 1px solid transparent; border-radius: {r_button}px; color: {p['muted']}; background: transparent; font-weight: 700; min-height: {round(28*scale)}px; }}
-#NavButton:hover {{ background: {p['panel_alt']}; color: {p['text']}; border-color: {p['border']}; }}
+#NavButton:hover {{ background: {panel_alt_bg}; color: {p['text']}; border-color: {p['border']}; }}
 #NavButton[active="true"] {{ background: {button_bg}; color: {p['button_text']}; border: 1px solid {p['accent2']}; }}
-#PageHeading {{ color: {p['text']}; font-size: 24pt; font-weight: 900; }}
-#Eyebrow {{ color: {p['accent2']}; font-size: 8pt; font-weight: 900; letter-spacing: 2px; }}
+#PageHeading {{ color: {p['text']}; font-size: {round(24*scale)}pt; font-weight: 900; }}
+#Eyebrow {{ color: {p['accent2']}; font-size: {round(8*scale)}pt; font-weight: 900; letter-spacing: 2px; }}
 #Muted {{ color: {p['muted']}; }}
-#Card {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+#Card {{ background: {panel_bg}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
 #HeroCard {{ background: {hero_bg}; border: 1px solid {p['accent']}; border-radius: {r_card+4}px; }}
-#HeroTitle {{ color: {p['text']}; font-size: 29pt; font-weight: 950; }}
-#HeroEmblem {{ background: {button_bg}; color: {p['button_text']}; border: 2px solid {p['accent2']}; border-radius: {r_card+8}px; font-size: 58pt; font-weight: 950; }}
+#HeroTitle {{ color: {p['text']}; font-size: {round(29*scale)}pt; font-weight: 950; }}
+#HeroEmblem {{ background: {button_bg}; color: {p['button_text']}; border: 2px solid {p['accent2']}; border-radius: {r_card+8}px; font-size: {round(58*scale)}pt; font-weight: 950; }}
 #HeroCopy {{ color: {p['muted']}; font-size: 10pt; }}
 #PrimaryButton {{ color: {p['button_text']}; background: {button_bg}; border: 1px solid {p['accent2']}; border-radius: {r_button}px; padding: {pad+3}px {pad+12}px; font-weight: 900; min-height: {round(26*scale)}px; }}
 #PrimaryButton:hover {{ background: {button_hover}; border-color: {p['text']}; }}
 #PrimaryButton:pressed {{ padding-top: {pad+5}px; }}
-#PrimaryButton:disabled {{ background: {p['panel_alt']}; color: {p['muted']}; border-color: {p['border']}; }}
-#SecondaryButton {{ color: {p['text']}; background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 750; min-height: {round(25*scale)}px; }}
+#PrimaryButton:disabled {{ background: {panel_alt_bg}; color: {p['muted']}; border-color: {p['border']}; }}
+#SecondaryButton {{ color: {p['text']}; background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 750; min-height: {round(25*scale)}px; }}
 #SecondaryButton:hover {{ background: {p['accent']}; color: {p['button_text']}; border-color: {p['accent2']}; }}
-#DangerButton {{ color: {p['danger']}; background: {p['panel_alt']}; border: 1px solid {p['danger']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
+#DangerButton {{ color: {p['danger']}; background: {panel_alt_bg}; border: 1px solid {p['danger']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
 #DangerButton:hover {{ color: #FFFFFF; background: {p['danger']}; }}
-QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: {r_control}px; color: {p['text']}; padding: {pad-2}px {pad}px; selection-background-color: {p['selection']}; min-height: {round(24*scale)}px; outline: 0; }}
+QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{ background: {input_bg}; border: 1px solid {p['border']}; border-radius: {r_control}px; color: {p['text']}; padding: {pad-2}px {pad}px; selection-background-color: {p['selection']}; min-height: {round(24*scale)}px; outline: 0; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {{ border: 1px solid {p['accent']}; outline: 0; }}
 QComboBox {{ combobox-popup: 0; padding-right: 32px; }}
 QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; border: 0; width: 30px; background: transparent; }}
 QComboBox::down-arrow {{ width: 7px; height: 7px; border-right: 2px solid {p['muted']}; border-bottom: 2px solid {p['muted']}; margin-right: 10px; margin-top: -3px; }}
-QComboBox QAbstractItemView {{ background: {p['panel']}; border: 0; outline: 0; selection-background-color: {p['selection']}; selection-color: {p['text']}; color: {p['text']}; padding: 4px; }}
-QComboBoxPrivateContainer {{ background: {p['panel']}; border: 0; padding: 0; margin: 0; }}
+QComboBox QAbstractItemView {{ background: {panel_bg}; border: 0; outline: 0; selection-background-color: {p['selection']}; selection-color: {p['text']}; color: {p['text']}; padding: 4px; }}
+QComboBoxPrivateContainer {{ background: {panel_bg}; border: 0; padding: 0; margin: 0; }}
 QComboBoxPrivateContainer QFrame {{ border: 0; padding: 0; margin: 0; }}
 QCheckBox {{ spacing: 10px; color: {p['text']}; }}
-QCheckBox::indicator {{ width: 19px; height: 19px; border-radius: 6px; border: 1px solid {p['border']}; background: {p['input']}; }}
+QCheckBox::indicator {{ width: 19px; height: 19px; border-radius: 6px; border: 1px solid {p['border']}; background: {input_bg}; }}
 QCheckBox::indicator:checked {{ background: {p['accent']}; border: 2px solid {p['accent2']}; }}
-QProgressBar {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: 8px; height: 15px; text-align: center; color: {p['text']}; }}
+QProgressBar {{ background: {input_bg}; border: 1px solid {p['border']}; border-radius: 8px; height: 15px; text-align: center; color: {p['text']}; }}
 QProgressBar::chunk {{ background: {button_bg}; border-radius: 7px; }}
-QPlainTextEdit {{ font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 9pt; }}
+QPlainTextEdit {{ font-family: 'Cascadia Code', 'Consolas', monospace; font-size: {round(9*scale)}pt; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 3px; }}
 QScrollBar::handle:vertical {{ background: {p['border']}; border-radius: 5px; min-height: 28px; }}
 QScrollBar::handle:vertical:hover {{ background: {p['accent']}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QSizeGrip {{ background: transparent; width: 16px; height: 16px; }}
-QLabel#Pill {{ background: {p['panel_alt']}; border: 1px solid {p['success']}; border-radius: 12px; padding: 6px 10px; color: {p['success']}; font-weight: 800; }}
-QLabel#AccountPill {{ background: {p['panel_alt']}; border: 1px solid {p['accent']}; border-radius: 12px; padding: 8px 12px; color: {p['text']}; font-weight: 800; }}
-QLabel#StatusText {{ color: {p['muted']}; font-size: 9pt; }}
-QLabel#SmallNote {{ color: {p['muted']}; font-size: 8pt; }}
+QLabel#Pill {{ background: {panel_alt_bg}; border: 1px solid {p['success']}; border-radius: 12px; padding: 6px 10px; color: {p['success']}; font-weight: 800; }}
+QLabel#AccountPill {{ background: {panel_alt_bg}; border: 1px solid {p['accent']}; border-radius: 12px; padding: 8px 12px; color: {p['text']}; font-weight: 800; }}
+QLabel#StatusText {{ color: {p['muted']}; font-size: {round(9*scale)}pt; }}
+QLabel#SmallNote {{ color: {p['muted']}; font-size: {round(8*scale)}pt; }}
 QFrame#Divider {{ background: {p['border']}; max-height: 1px; }}
-QToolTip {{ color: {p['text']}; background: {p['panel']}; border: 1px solid {p['accent']}; padding: 7px 10px; border-radius: 8px; }}
-QLabel#SkinAvatar {{ background: {p['panel_alt']}; border: 2px solid {p['accent']}; border-radius: 20px; color: {p['accent2']}; font-size: 32pt; font-weight: 900; }}
-QLabel#PromoBanner {{ background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_card}px; padding: 7px; }}
-QFrame#ToastCard {{ background: {p['panel_alt']}; border: 1px solid {p['accent']}; border-radius: 16px; }}
+QToolTip {{ color: {p['text']}; background: {panel_bg}; border: 1px solid {p['accent']}; padding: 7px 10px; border-radius: 8px; }}
+QLabel#SkinAvatar {{ background: {panel_alt_bg}; border: 2px solid {p['accent']}; border-radius: 20px; color: {p['accent2']}; font-size: 32pt; font-weight: 900; }}
+QLabel#PromoBanner {{ background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: {r_card}px; padding: 7px; }}
+QFrame#ToastCard {{ background: {panel_alt_bg}; border: 1px solid {p['accent']}; border-radius: 16px; }}
 QLabel#ToastTitle {{ color: {p['text']}; font-size: 10pt; font-weight: 900; }}
-QLabel#ToastMessage {{ color: {p['muted']}; font-size: 9pt; }}
+QLabel#ToastMessage {{ color: {p['muted']}; font-size: {round(9*scale)}pt; }}
 QLabel#ToastIcon {{ color: {p['accent2']}; font-size: 19pt; font-weight: 900; }}
-QToolButton#ToastClose {{ color: {p['muted']}; border: 0; background: transparent; font-size: 14pt; }}
+QToolButton#ToastClose {{ color: {p['muted']}; border: 0; background: transparent; font-size: {round(14*scale)}pt; }}
 QPushButton#ColorButton {{ min-width: 100px; max-width: 100px; min-height: 30px; border-radius: 8px; border: 1px solid {p['border']}; }}
-QSlider::groove:horizontal {{ height: 7px; background: {p['panel_alt']}; border-radius: 3px; }}
+QSlider::groove:horizontal {{ height: 7px; background: {panel_alt_bg}; border-radius: 3px; }}
 QSlider::handle:horizontal {{ width: 18px; margin: -6px 0; border-radius: 9px; background: {p['accent']}; border: 2px solid {p['accent2']}; }}
 /* Native popup frames and focus outlines used to appear white on some Windows styles. */
 QComboBox QAbstractItemView, QAbstractItemView, QListView, QTreeView {{
-    background: {p['panel']}; color: {p['text']}; border: 0; outline: 0;
+    background: {panel_bg}; color: {p['text']}; border: 0; outline: 0;
     selection-background-color: {p['selection']}; selection-color: {p['text']};
 }}
-QComboBoxPrivateContainer {{ background: {p['panel']}; border: 0; padding: 0; margin: 0; }}
+QComboBoxPrivateContainer {{ background: {panel_bg}; border: 0; padding: 0; margin: 0; }}
 QComboBoxPrivateContainer QFrame {{ border: 0; padding: 0; margin: 0; }}
 QComboBox QAbstractItemView::item, QAbstractItemView::item, QListWidget::item {{
     background: transparent; color: {p['text']}; border: 0; padding: 8px 10px; min-height: 24px;
 }}
 QComboBox QAbstractItemView::item:hover, QAbstractItemView::item:hover, QListWidget::item:hover {{
-    background: {p['panel_alt']}; color: {p['text']};
+    background: {panel_alt_bg}; color: {p['text']};
 }}
 QComboBox QAbstractItemView::item:selected, QAbstractItemView::item:selected, QListWidget::item:selected {{
     background: {p['selection']}; color: {p['text']}; border: 0;
 }}
 QComboBox QAbstractItemView:focus, QListWidget:focus, QListView:focus, QTreeView:focus {{ outline: 0; }}
 QListWidget {{
-    background: {p['input']}; color: {p['text']}; border: 1px solid {p['border']};
-    border-radius: {r_control}px; outline: 0; padding: 5px; alternate-background-color: {p['panel_alt']};
+    background: {input_bg}; color: {p['text']}; border: 1px solid {p['border']};
+    border-radius: {r_control}px; outline: 0; padding: 5px; alternate-background-color: {panel_alt_bg};
 }}
-QListWidget#ModrinthResultsList {{ background: {p['window']}; border: 1px solid {p['border']}; padding: 8px; }}
-QFrame#ModrinthProjectCard {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
-QFrame#ModrinthProjectCard:hover {{ background: {p['panel_alt']}; border-color: {p['accent2']}; }}
-QLabel#ModrinthProjectIcon {{ background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: 12px; color: {p['accent2']}; font-size: 20pt; font-weight: 900; }}
-QLabel#ModrinthProjectTitle {{ color: {p['text']}; font-size: 11pt; font-weight: 800; }}
-QLabel#ModrinthProjectDescription {{ color: {p['muted']}; font-size: 9pt; }}
-QLabel#ModrinthProjectMeta {{ color: {p['muted']}; font-size: 8pt; }}
+QListWidget#ModrinthResultsList {{ background: {window_fill}; border: 1px solid {p['border']}; padding: 8px; }}
+QFrame#ModrinthProjectCard {{ background: {panel_bg}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QFrame#ModrinthProjectCard:hover {{ background: {panel_alt_bg}; border-color: {p['accent2']}; }}
+QLabel#ModrinthProjectIcon {{ background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: 12px; color: {p['accent2']}; font-size: 20pt; font-weight: 900; }}
+QLabel#ModrinthProjectTitle {{ color: {p['text']}; font-size: {round(11*scale)}pt; font-weight: 800; }}
+QLabel#ModrinthProjectDescription {{ color: {p['muted']}; font-size: {round(9*scale)}pt; }}
+QLabel#ModrinthProjectMeta {{ color: {p['muted']}; font-size: {round(8*scale)}pt; }}
 QLabel#ModrinthProjectTags {{ color: {p['accent2']}; font-size: 8pt; font-weight: 700; }}
 QLabel#ModrinthProjectState[state="queued"] {{ color: {p['accent2']}; font-size: 8pt; font-weight: 800; }}
 QLabel#ModrinthProjectState[state="downloading"] {{ color: {p['accent']}; font-size: 8pt; font-weight: 800; }}
 QLabel#ModrinthProjectState[state="installed"] {{ color: {p['success']}; font-size: 8pt; font-weight: 800; }}
 QLabel#ModrinthProjectState[state="failed"] {{ color: {p['danger']}; font-size: 8pt; font-weight: 800; }}
-QPushButton#ModrinthQueuedButton {{ color: {p['text']}; background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
-QPushButton#ModrinthDownloadingButton {{ color: {p['text']}; background: {p['panel_alt']}; border: 1px solid {p['accent2']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
-QPushButton#ModrinthInstalledButton {{ color: {p['success']}; background: {p['panel_alt']}; border: 1px solid {p['success']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 900; }}
-QPushButton#ModrinthRetryButton {{ color: {p['danger']}; background: {p['panel_alt']}; border: 1px solid {p['danger']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
+QPushButton#ModrinthQueuedButton {{ color: {p['text']}; background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
+QPushButton#ModrinthDownloadingButton {{ color: {p['text']}; background: {panel_alt_bg}; border: 1px solid {p['accent2']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
+QPushButton#ModrinthInstalledButton {{ color: {p['success']}; background: {panel_alt_bg}; border: 1px solid {p['success']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 900; }}
+QPushButton#ModrinthRetryButton {{ color: {p['danger']}; background: {panel_alt_bg}; border: 1px solid {p['danger']}; border-radius: {r_button}px; padding: {pad}px {pad+7}px; font-weight: 800; }}
 QWidget#ModrinthCatalogContent {{ background: transparent; }}
 QScrollArea#ModrinthCatalogScroll {{ background: transparent; border: 0; }}
-QTabWidget#ProfileContentTabs::pane {{ border: 0; background: {p['panel']}; top: 0; }}
+QTabWidget#ProfileContentTabs::pane {{ border: 0; background: {panel_bg}; top: 0; }}
 QTabWidget#ProfileContentTabs QTabBar {{ background: transparent; border: 0; }}
-QTabWidget#ProfileContentTabs QTabBar::tab {{ background: {p['panel_alt']}; color: {p['muted']}; border: 1px solid {p['border']}; padding: 9px 16px; margin-right: 5px; border-top-left-radius: 9px; border-top-right-radius: 9px; }}
-QTabWidget#ProfileContentTabs QTabBar::tab:selected {{ background: {p['panel']}; color: {p['text']}; border-bottom-color: {p['panel']}; font-weight: 800; }}
-QLabel#ModrinthGalleryImage {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: 9px; color: {p['muted']}; }}
+QTabWidget#ProfileContentTabs QTabBar::tab {{ background: {panel_alt_bg}; color: {p['muted']}; border: 1px solid {p['border']}; padding: 9px 16px; margin-right: 5px; border-top-left-radius: 9px; border-top-right-radius: 9px; }}
+QTabWidget#ProfileContentTabs QTabBar::tab:selected {{ background: {panel_bg}; color: {p['text']}; border-bottom-color: {panel_bg}; font-weight: 800; }}
+QLabel#ModrinthGalleryImage {{ background: {input_bg}; border: 1px solid {p['border']}; border-radius: 9px; color: {p['muted']}; }}
 /* Profile and Modrinth UI refinements */
-QListWidget#ProfileModsList {{ background: {p['input']}; border: 1px solid {p['border']}; border-radius: {r_card}px; padding: 7px; outline: 0; }}
-QListWidget#ProfileModsList::item {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 8px; margin: 2px 0; padding: 3px; }}
+QListWidget#ProfileModsList {{ background: {input_bg}; border: 1px solid {p['border']}; border-radius: {r_card}px; padding: 7px; outline: 0; }}
+QListWidget#ProfileModsList::item {{ background: {panel_bg}; border: 1px solid {p['border']}; border-radius: 8px; margin: 2px 0; padding: 3px; }}
 QListWidget#ProfileModsList::item:selected {{ background: {p['selection']}; border-color: {p['accent']}; color: {p['text']}; }}
-QLabel#InstalledModIcon {{ background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: 8px; color: {p['accent2']}; font-size: 8pt; font-weight: 900; }}
+QLabel#InstalledModIcon {{ background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: 8px; color: {p['accent2']}; font-size: 8pt; font-weight: 900; }}
 QPushButton#InstalledModTitle {{ text-align: left; color: {p['text']}; background: transparent; border: 0; padding: 5px 8px; font-weight: 800; }}
-QPushButton#InstalledModTitle:hover {{ color: {p['accent2']}; background: {p['panel_alt']}; border-radius: 6px; }}
-QPushButton#ModTypeFilter {{ color: {p['muted']}; background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: 8px 12px; font-weight: 900; }}
+QPushButton#InstalledModTitle:hover {{ color: {p['accent2']}; background: {panel_alt_bg}; border-radius: 6px; }}
+QPushButton#ModTypeFilter {{ color: {p['muted']}; background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: {r_button}px; padding: 8px 12px; font-weight: 900; }}
 QPushButton#ModTypeFilter:hover {{ color: {p['text']}; border-color: {p['accent']}; }}
 QPushButton#ModTypeFilter:checked {{ color: {p['button_text']}; background: {button_bg}; border: 1px solid {p['accent2']}; }}
-QFrame#ModrinthDetailsHeader {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
-QFrame#ModrinthDetailsFooter {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QWidget#ModrinthDetailsDialog {{ background: transparent; color: {p['text']}; }}
+QFrame#ModrinthDetailsHeader {{ background: {panel_bg}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QFrame#ModrinthDetailsFooter {{ background: {panel_bg}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
 QScrollArea#ModrinthDetailsScroll, QScrollArea#ModrinthGalleryScroll {{ background: transparent; border: 0; }}
-QTextBrowser#ModrinthProjectBody {{ background: {p['window']}; color: {p['text']}; border: 0; padding: 10px 12px; selection-background-color: {p['selection']}; }}
+QTextBrowser#ModrinthProjectBody {{ background: {window_fill}; color: {p['text']}; border: 0; padding: 10px 12px; selection-background-color: {p['selection']}; }}
 QLabel#SectionTitle {{ color: {p['accent2']}; font-size: 13pt; font-weight: 900; padding: 4px 0; }}
-QFrame#ActionGroup {{ background: {p['panel_alt']}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QFrame#ActionGroup {{ background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: {r_card}px; }}
+QFrame#ActivityDrawer {{ background: {panel_bg}; border: 1px solid {p['accent']}; border-radius: 18px; }}
+QLabel#ActivityTitle {{ color: {p['text']}; font-size: 15pt; font-weight: 900; }}
+QPushButton#ActivityTab {{ color: {p['muted']}; background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: 10px; padding: 8px 10px; font-weight: 800; }}
+QPushButton#ActivityTab:checked {{ color: {p['button_text']}; background: {button_bg}; border-color: {p['accent2']}; }}
+QFrame#DownloadTaskCard, QFrame#DownloadSpeedCard, QFrame#NotificationFilters {{ background: {panel_alt_bg}; border: 1px solid {p['border']}; border-radius: 12px; }}
+QLabel#DownloadTaskTitle {{ color: {p['text']}; font-weight: 850; }}
+QLabel#DownloadTaskState {{ color: {p['accent2']}; font-size: 8pt; font-weight: 800; }}
+QProgressBar#DownloadTaskProgress {{ background: {p['input']}; border: 0; border-radius: 4px; }}
+QProgressBar#DownloadTaskProgress::chunk {{ background: {button_bg}; border-radius: 4px; }}
+QListWidget#NotificationHistoryList {{ background: {input_bg}; border: 1px solid {p['border']}; border-radius: 12px; padding: 5px; }}
+QListWidget#NotificationHistoryList::item {{ padding: 10px; border-bottom: 1px solid {p['border']}; }}
+QListWidget#NotificationHistoryList::item:selected {{ background: {p['selection']}; }}
 """

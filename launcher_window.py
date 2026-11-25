@@ -18,20 +18,21 @@ from pathlib import Path, PurePosixPath
 
 from packaging.version import InvalidVersion, Version
 import minecraft_launcher_lib as mll
-from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, QObject, pyqtSignal
-from PyQt5.QtGui import QIcon, QDesktopServices, QColor, QImage, QPixmap, QPainter
+from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, QObject, pyqtSignal, QSize, QEvent
+from PyQt5.QtGui import QIcon, QDesktopServices, QColor, QImage, QPixmap, QPainter, QPainterPath, QImageReader, QKeySequence
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QFrame, QLabel, QPushButton, QToolButton, QVBoxLayout,
     QHBoxLayout, QGridLayout, QStackedWidget, QComboBox, QLineEdit, QSpinBox,
     QCheckBox, QProgressBar, QPlainTextEdit, QFileDialog,
     QSizeGrip, QGraphicsDropShadowEffect, QScrollArea, QTabWidget,
     QColorDialog, QSlider, QFontComboBox, QListWidget, QListWidgetItem, QInputDialog, QScroller,
-    QMenu, QButtonGroup, QSizePolicy, QMessageBox,
+    QMenu, QButtonGroup, QSizePolicy, QMessageBox, QApplication, QShortcut, QKeySequenceEdit,
 )
 
 from github_service import ReleaseCheckWorker, AssetDownloadWorker, StaticContentWorker, RemoteImageWorker
 from logging_setup import configure_logging, log_file, user_data_dir
-from minecraft_service import (VersionListWorker, LoaderVersionListWorker, InstallMinecraftWorker, LaunchWorker)
+from minecraft_service import (VersionListWorker, LoaderVersionListWorker, InstallMinecraftWorker, LaunchWorker,
+                               DownloadCancelled)
 from profile_manager import ProfileManager, ProfileError
 from appearance_manager import AppearanceManager, PRESETS, COLOR_LABELS
 from toast_notifications import ToastNotification
@@ -49,15 +50,109 @@ from storage_worker import StorageMigrationWorker
 from version_metadata import read_version_metadata
 from discord_presence import DiscordPresenceManager
 from modrinth_ui import ModrinthCatalogWidget, ModrinthProjectDetailsDialog
+from activity_drawer import ActivityDrawer
+from download_control import DownloadRateLimiter, DownloadTaskControl
 
 log = logging.getLogger("fiercy.ui")
 ROOT = Path(__file__).resolve().parent
+
+
+class WallpaperLabel(QLabel):
+    """Background photo rendered with a cover crop and a readability overlay."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source = QPixmap()
+        self._loaded_path = ""
+        self._overlay_alpha = 100
+        self._corner_radius = 22
+        self.setObjectName("LauncherWallpaper")
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setStyleSheet("background: transparent; border: 0;")
+
+    def set_image(self, path: str) -> bool:
+        try:
+            image_path = Path(path).expanduser().resolve()
+            if not image_path.is_file() or image_path.stat().st_size > 32 * 1024 * 1024:
+                return False
+            if self._loaded_path == str(image_path) and not self._source.isNull():
+                self._render_image()
+                self.show()
+                return True
+            reader = QImageReader(str(image_path))
+            reader.setAutoTransform(True)
+            dimensions = reader.size()
+            if dimensions.isValid():
+                width, height = dimensions.width(), dimensions.height()
+                if width <= 0 or height <= 0 or width * height > 24_000_000:
+                    return False
+                scale = min(1.0, 4096 / max(width, height))
+                if scale < 1.0:
+                    reader.setScaledSize(QSize(max(1, int(width * scale)), max(1, int(height * scale))))
+            image = QPixmap.fromImage(reader.read())
+        except (OSError, RuntimeError):
+            return False
+        if image.isNull():
+            return False
+        self._source = image
+        self._loaded_path = str(image_path)
+        self._render_image()
+        self.show()
+        self.lower()
+        return True
+
+    def clear_image(self) -> None:
+        self._source = QPixmap()
+        self._loaded_path = ""
+        self.clear()
+        self.hide()
+
+    def set_overlay_alpha(self, alpha: int) -> None:
+        self._overlay_alpha = max(0, min(210, int(alpha)))
+        self.update()
+
+    def set_corner_radius(self, radius: int) -> None:
+        self._corner_radius = max(0, min(48, int(radius)))
+        self.update()
+
+    def update_parent_geometry(self) -> None:
+        if self.parentWidget() is not None:
+            self.setGeometry(self.parentWidget().rect())
+        self._render_image()
+
+    def _render_image(self) -> None:
+        # Рендер выполняется в paintEvent, чтобы изображение не выходило
+        # за скруглённые углы окна на Windows.
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render_image()
+
+    def paintEvent(self, event):
+        if self._source.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        clip = QPainterPath()
+        clip.addRoundedRect(0.0, 0.0, float(self.width()), float(self.height()),
+                            float(self._corner_radius), float(self._corner_radius))
+        painter.setClipPath(clip)
+        scaled = self._source.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = max(0, (scaled.width() - self.width()) // 2)
+        y = max(0, (scaled.height() - self.height()) // 2)
+        painter.drawPixmap(0, 0, scaled.copy(x, y, self.width(), self.height()))
+        if self._overlay_alpha:
+            painter.fillRect(self.rect(), QColor(4, 8, 16, self._overlay_alpha))
+        painter.end()
 
 
 class ModInstallTaskRelay(QObject):
     """Переносит события QThread в GUI-поток вместе с ID задачи."""
     result = pyqtSignal(str, object, str)
     progress = pyqtSignal(str, str)
+    warnings = pyqtSignal(str, object)
     finished = pyqtSignal(str)
 
 
@@ -88,6 +183,12 @@ class TitleBar(QFrame):
         name_col.addWidget(subtitle)
         row.addLayout(name_col)
         row.addStretch(1)
+        self.notifications_button = QToolButton()
+        self.notifications_button.setObjectName("NotificationBell")
+        self.notifications_button.setText("♧  0")
+        self.notifications_button.setToolTip("История уведомлений")
+        self.notifications_button.clicked.connect(window.toggle_notifications)
+        row.addWidget(self.notifications_button)
         self.status = QLabel("●  ГОТОВ")
         self.status.setObjectName("StatusText")
         row.addWidget(self.status)
@@ -132,8 +233,18 @@ class LauncherWindow(QMainWindow):
         self.settings = QSettings("Fiercy", "FiercyLauncher")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setMinimumSize(900, 600)
-        self.resize(1220, 800)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        screen_width = available.width() if available is not None else 1366
+        screen_height = available.height() if available is not None else 768
+        # Удобный стартовый размер в оконном режиме; не заставляет пользователя
+        # разворачивать окно, но оставляет нормальную ширину каталогу и карточкам.
+        min_width = min(820, max(680, screen_width - 48))
+        min_height = min(540, max(460, screen_height - 48))
+        self.setMinimumSize(min_width, min_height)
+        default_width = min(max(960, int(screen_width * 0.80)), min(1360, screen_width - 48))
+        default_height = min(max(620, int(screen_height * 0.82)), min(880, screen_height - 48))
+        self.resize(default_width, default_height)
         icon_path = ROOT / "assets" / "icon.ico"
         if icon_path.is_file():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -187,9 +298,11 @@ class LauncherWindow(QMainWindow):
         self._discord_game_started_at = 0
         self.discord_presence = DiscordPresenceManager()
         self.modpack_worker = None
+        self._modpack_task_id = ""
         self.local_import_worker = None
         self.storage_worker = None
         self._install_profile_id = None
+        self._install_task_id = ""
         self._local_import_profile_id = None
         self._modpack_profile_id = None
         self._mod_install_profile_id = None
@@ -197,16 +310,50 @@ class LauncherWindow(QMainWindow):
         self._settings_committed = None
         self._settings_tracking_ready = False
         self._banner_pixmap = QPixmap()
+        self._effective_density = None
+        self._download_tasks: dict[str, dict] = {}
+        self._download_task_workers: dict[str, object] = {}
+        saved_limit = self.settings.value("downloads/max_speed_mbps", 0, type=int)
+        self.download_rate_limiter = DownloadRateLimiter(saved_limit)
+        self._activity_refresh_timer = QTimer(self)
+        self._activity_refresh_timer.setSingleShot(True)
+        self._activity_refresh_timer.setInterval(280)
+        self._activity_refresh_timer.timeout.connect(self._refresh_activity_drawer)
+        self._notifications = self._load_notification_history()
+        self._notification_filters = self._load_notification_filters()
         self._update_archive = ""
+        self._update_task_id = ""
         self._allow_update_close = False
         self._page_animation = None
+        self._navigation_history = []
+        self._forward_history = []
+        self._hotkey_shortcuts = []
+        self._hotkey_filter_installed = False
+        self._hotkey_actions = {}
+        self.modrinth_details_page = None
         self.appearance_manager = AppearanceManager(self.settings)
         self.appearance_data = self.appearance_manager.load()
         self.appearance_palette = dict(self.appearance_data["palette"])
         self.appearance_geometry = dict(self.appearance_data["geometry"])
         self._build_ui()
         self.toast = ToastNotification(self)
+        self.activity_drawer = ActivityDrawer(
+            self.window_root, speed_limit_mbps=self.download_rate_limiter.limit_mbps,
+            filters=self._notification_filters,
+        )
+        self.activity_drawer.pauseRequested.connect(self.pause_download_task)
+        self.activity_drawer.resumeRequested.connect(self.resume_download_task)
+        self.activity_drawer.cancelRequested.connect(self.cancel_download_task)
+        self.activity_drawer.removeRequested.connect(self.remove_download_task)
+        self.activity_drawer.speedLimitChanged.connect(self._set_download_speed_limit)
+        self.activity_drawer.notificationRead.connect(self._mark_notification_read)
+        self.activity_drawer.filtersChanged.connect(self._set_notification_filters)
+        self.activity_drawer.clearReadRequested.connect(self._clear_read_notifications)
+        self.activity_drawer.closeRequested.connect(self.activity_drawer.hide)
+        self._refresh_notifications()
+        self._refresh_activity_drawer()
         self._connect_settings_tracking()
+        self._configure_hotkeys()
         self._settings_committed = self._settings_snapshot()
         self.apply_theme()
         self._refresh_profiles()
@@ -230,6 +377,9 @@ class LauncherWindow(QMainWindow):
         outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(0)
         self.window_root = root
+        self.wallpaper_label = WallpaperLabel(root)
+        self.wallpaper_label.setGeometry(root.rect())
+        self.wallpaper_label.lower()
         self.title_bar = TitleBar(self)
         outer.addWidget(self.title_bar)
 
@@ -241,11 +391,11 @@ class LauncherWindow(QMainWindow):
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
         self.sidebar = sidebar
-        sidebar.setFixedWidth(min(236, max(188, int(self.appearance_geometry.get("sidebar_width", 236)))))
+        sidebar.setFixedWidth(min(216, max(170, int(self.appearance_geometry.get("sidebar_width", 216)))))
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(15, 20, 15, 16)
         side.setSpacing(9)
-        kicker = QLabel("РАБОЧЕЕ ПРОСТРАНСТВО")
+        kicker = QLabel("РАЗДЕЛЫ")
         kicker.setObjectName("Eyebrow")
         side.addWidget(kicker)
         self.nav_buttons = []
@@ -258,12 +408,19 @@ class LauncherWindow(QMainWindow):
             self.nav_buttons.append(button)
             side.addWidget(button)
         side.addStretch(1)
+        self.downloads_button = QPushButton("↓    Загрузки")
+        self.downloads_button.setObjectName("NavButton")
+        self.downloads_button.setCursor(Qt.PointingHandCursor)
+        self.downloads_button.setToolTip("Открыть общий центр загрузок")
+        self.downloads_button.clicked.connect(self.toggle_downloads)
+        side.addWidget(self.downloads_button)
 
         body.addWidget(sidebar)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(24, 18, 24, 12)
+        self.content_layout = content_layout
+        content_layout.setContentsMargins(16, 14, 16, 10)
         content_layout.setSpacing(12)
         body.addWidget(content, 1)
         self.stack = QStackedWidget()
@@ -364,6 +521,10 @@ class LauncherWindow(QMainWindow):
             "show_snapshots": self.show_snapshots_check.isChecked() if hasattr(self, "show_snapshots_check") else False,
             "discord_enabled": self.discord_presence_check.isChecked() if hasattr(self, "discord_presence_check") else self.settings.value("discord/enabled", False, type=bool),
             "discord_client_id": self.discord_client_id_edit.text().strip() if hasattr(self, "discord_client_id_edit") else str(self.settings.value("discord/client_id", "")),
+            "hotkeys_enabled": self.hotkeys_enabled_check.isChecked() if hasattr(self, "hotkeys_enabled_check") else self.settings.value("hotkeys/enabled", True, type=bool),
+            "hotkeys_advanced": self.advanced_hotkeys_check.isChecked() if hasattr(self, "advanced_hotkeys_check") else self.settings.value("hotkeys/advanced", False, type=bool),
+            "hotkey_bindings": {key: editor.keySequence().toString(QKeySequence.PortableText)
+                                for key, editor in getattr(self, "hotkey_edits", {}).items()},
             "appearance": appearance,
         }
 
@@ -469,6 +630,10 @@ class LauncherWindow(QMainWindow):
         self.install_button.setMinimumHeight(48)
         self.install_button.clicked.connect(self.install_selected)
         install_row.addWidget(self.install_button)
+        self.cancel_install_button = self._button("Отменить загрузку", danger=True)
+        self.cancel_install_button.clicked.connect(self.cancel_install)
+        self.cancel_install_button.hide()
+        install_row.addWidget(self.cancel_install_button)
         install_row.addStretch(1)
         install_box.addLayout(install_row)
         layout.addWidget(install_card)
@@ -643,6 +808,10 @@ class LauncherWindow(QMainWindow):
         self.install_profile_button = self._button("⬇ Установить / проверить", primary=True)
         self.install_profile_button.clicked.connect(self.install_profile)
         run_actions.addWidget(self.install_profile_button)
+        self.cancel_profile_install_button = self._button("Отменить загрузку", danger=True)
+        self.cancel_profile_install_button.clicked.connect(self.cancel_install)
+        self.cancel_profile_install_button.hide()
+        run_actions.addWidget(self.cancel_profile_install_button)
         self.play_profile_button = self._button("▶ Играть в сборку", primary=True)
         self.play_profile_button.clicked.connect(self.launch_active_profile)
         run_actions.addWidget(self.play_profile_button)
@@ -667,11 +836,19 @@ class LauncherWindow(QMainWindow):
         import_map = self._button("Импортировать карту .zip")
         import_map.clicked.connect(self.import_map_zip)
         import_row.addWidget(import_map)
+        self.cancel_modpack_button = self._button("Остановить импорт", danger=True)
+        self.cancel_modpack_button.clicked.connect(self.cancel_modpack_import)
+        self.cancel_modpack_button.hide()
+        import_row.addWidget(self.cancel_modpack_button)
         open_versions = self._button("Общая папка versions")
         open_versions.clicked.connect(lambda: self._open_folder(self.game_root / "versions"))
         import_row.addWidget(open_versions)
         import_row.addStretch(1)
         imports_box.addLayout(import_row)
+        self.modpack_progress = QProgressBar()
+        self.modpack_progress.setRange(0, 100)
+        self.modpack_progress.hide()
+        imports_box.addWidget(self.modpack_progress)
         self.profile_imports_card = imports_card
         layout.addWidget(imports_card)
 
@@ -744,6 +921,12 @@ class LauncherWindow(QMainWindow):
             "Что поставим в игру?",
             "Выбирай моды, ресурспаки, шейдеры или готовые сборки. Перед установкой укажи, куда сохранить дополнения."
         )
+        catalog_controls_widget = QWidget()
+        catalog_controls_widget.setObjectName("ModrinthCatalogControls")
+        catalog_controls_layout = QVBoxLayout(catalog_controls_widget)
+        catalog_controls_layout.setContentsMargins(0, 0, 0, 0)
+        catalog_controls_layout.setSpacing(8)
+        self.catalog_controls_widget = catalog_controls_widget
         target_row = QHBoxLayout()
         target_row.setSpacing(10)
         target_label = QLabel("КУДА УСТАНАВЛИВАТЬ")
@@ -760,7 +943,7 @@ class LauncherWindow(QMainWindow):
         self.catalog_target_hint.setObjectName("Muted")
         self.catalog_target_hint.setWordWrap(True)
         target_row.addWidget(self.catalog_target_hint, 2)
-        catalog_box.addLayout(target_row)
+        catalog_controls_layout.addLayout(target_row)
 
         filters_row = QHBoxLayout()
         filters_row.setSpacing(8)
@@ -795,7 +978,7 @@ class LauncherWindow(QMainWindow):
         self.mod_sort_combo.addItem("Недавно обновлялись", "updated")
         self.mod_sort_combo.setMinimumHeight(38)
         filters_row.addWidget(self.mod_sort_combo)
-        catalog_box.addLayout(filters_row)
+        catalog_controls_layout.addLayout(filters_row)
 
         search_row = QHBoxLayout()
         self.mod_search_edit = QLineEdit()
@@ -805,20 +988,30 @@ class LauncherWindow(QMainWindow):
         search_button = self._button("Найти", primary=True)
         search_button.clicked.connect(self.search_mods)
         search_row.addWidget(search_button)
-        catalog_box.addLayout(search_row)
+        catalog_controls_layout.addLayout(search_row)
 
+        catalog_box.addWidget(self.catalog_controls_widget)
         self.mod_catalog_widget = ModrinthCatalogWidget()
-        self.mod_catalog_widget.setMinimumHeight(420)
+        self.mod_catalog_widget.setMinimumHeight(360)
         self.mod_catalog_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.mod_catalog_widget.projectDetailsRequested.connect(self.open_modrinth_project_details)
         self.mod_catalog_widget.installRequested.connect(self.install_modrinth_project)
         self.mod_catalog_widget.removeRequested.connect(self.remove_modrinth_project)
+        self.mod_catalog_widget.cancelRequested.connect(self.cancel_modrinth_install)
         self.mod_catalog_widget.loadMoreRequested.connect(lambda: self.search_mods(load_more=True))
-        catalog_box.addWidget(self.mod_catalog_widget, 1)
+        self.mod_catalog_stack = QStackedWidget()
+        self.mod_catalog_stack.setObjectName("ModrinthContentStack")
+        self.mod_catalog_page = QWidget()
+        catalog_page_layout_inner = QVBoxLayout(self.mod_catalog_page)
+        catalog_page_layout_inner.setContentsMargins(0, 0, 0, 0)
+        catalog_page_layout_inner.setSpacing(6)
+        catalog_page_layout_inner.addWidget(self.mod_catalog_widget, 1)
         self.mod_status_label = QLabel("Здесь можно найти моды, ресурспаки, шейдеры и готовые сборки.")
         self.mod_status_label.setObjectName("Muted")
         self.mod_status_label.setWordWrap(True)
-        catalog_box.addWidget(self.mod_status_label)
+        catalog_page_layout_inner.addWidget(self.mod_status_label)
+        self.mod_catalog_stack.addWidget(self.mod_catalog_page)
+        catalog_box.addWidget(self.mod_catalog_stack, 1)
         catalog_page_layout.addWidget(catalog_card, 1)
         self.profile_tabs.addTab(catalog_page, "Каталог")
         layout.addWidget(self.profile_tabs, 1)
@@ -978,30 +1171,81 @@ class LauncherWindow(QMainWindow):
 
         discord_card, discord_box = self._section_card(
             "Discord",
-            "Чтобы Discord показывал FiercyLauncher без отдельного Application ID, добавь исполняемый файл лаунчера в зарегистрированные игры Discord. Подробный Rich Presence с версией Minecraft требует собственного Application ID; лаунчер не запрашивает его у игроков."
+            "Показывать Minecraft-статус через Discord Rich Presence. Для этого нужен настоящий Application ID приложения FiercyLauncher."
         )
-        self.discord_presence_check = QCheckBox("Включить расширенное отображение Minecraft в Discord")
-        self.discord_presence_check.setChecked(self.settings.value("discord/enabled", True, type=bool))
+        self.discord_presence_check = QCheckBox("Включить Rich Presence во время игры")
+        self.discord_presence_check.setChecked(self.settings.value("discord/enabled", False, type=bool))
         discord_box.addWidget(self.discord_presence_check)
-        executable_name = Path(sys.executable).name if getattr(sys, "frozen", False) else "python.exe (при запуске из исходников)"
+        client_id_row = QHBoxLayout()
+        client_id_row.addWidget(QLabel("Application ID"))
+        self.discord_client_id_edit = QLineEdit(str(self.settings.value("discord/client_id", "")))
+        self.discord_client_id_edit.setPlaceholderText("Настоящий ID приложения Discord — не тестовый номер")
+        client_id_row.addWidget(self.discord_client_id_edit, 1)
+        discord_box.addLayout(client_id_row)
         discord_hint = QLabel(
-            "Чтобы Discord показывал «Играет в FiercyLauncher» без Application ID, один раз добавь запущенное приложение "
-            "в Настройки пользователя → Зарегистрированные игры → Добавить игру. "
-            f"В установленной версии выбери FiercyLauncher.exe (сейчас процесс: {executable_name}). "
-            "Затем включи «Отображать текущую активность». Сам Discord определяет зарегистрированный EXE; "
-            "лаунчер не может включить чужую активность без регистрации или общего Application ID."
+            "Для статуса «Играет в Minecraft» укажи Application ID своего Discord-приложения. "
+            "Без него можно зарегистрировать EXE в Discord → Зарегистрированные игры."
         )
         discord_hint.setObjectName("Muted")
         discord_hint.setWordWrap(True)
         discord_box.addWidget(discord_hint)
-        discord_button = self._button("Открыть настройки игр Discord")
+        discord_button = self._button("Настройки активности Discord")
         discord_button.clicked.connect(self.open_discord_games_settings)
         discord_box.addWidget(discord_button, 0, Qt.AlignLeft)
-        # Для разработчика можно задать собственный ID через QSettings/конфиг,
-        # но обычным игрокам это поле больше не показывается.
-        self.discord_client_id_edit = QLineEdit(str(self.settings.value("discord/client_id", "")))
-        self.discord_client_id_edit.hide()
         layout.addWidget(discord_card)
+
+        hotkeys_card, hotkeys_box = self._section_card(
+            "Горячие клавиши",
+            "Базовые действия работают всегда, когда настройка включена: Esc закрывает открытые панели, боковая кнопка мыши «Назад» возвращает на предыдущий экран, «Вперёд» — на следующий. Расширенные сочетания можно переназначить ниже."
+        )
+        self.hotkeys_enabled_check = QCheckBox("Включить горячие клавиши (Esc и боковые кнопки мыши)")
+        self.hotkeys_enabled_check.setChecked(self.settings.value("hotkeys/enabled", True, type=bool))
+        hotkeys_box.addWidget(self.hotkeys_enabled_check)
+        self.advanced_hotkeys_check = QCheckBox("Включить расширенные горячие клавиши и их настройку")
+        self.advanced_hotkeys_check.setChecked(self.settings.value("hotkeys/advanced", False, type=bool))
+        self.advanced_hotkeys_check.setEnabled(self.hotkeys_enabled_check.isChecked())
+        hotkeys_box.addWidget(self.advanced_hotkeys_check)
+        hotkey_specs = (
+            ("page_game", "Открыть раздел «Игра»", "Ctrl+1"),
+            ("page_mods", "Открыть раздел «Моды и сборки»", "Ctrl+2"),
+            ("page_city", "Открыть раздел «FiercyCity»", "Ctrl+3"),
+            ("page_settings", "Открыть раздел «Настройки»", "Ctrl+4"),
+            ("page_updates", "Открыть раздел «Обновления и логи»", "Ctrl+5"),
+            ("launch", "Запустить выбранную игру", "F5"),
+            ("downloads", "Открыть центр загрузок", "Ctrl+J"),
+            ("notifications", "Открыть уведомления", "Ctrl+Shift+N"),
+            ("search", "Перейти к поиску модов", "Ctrl+F"),
+            ("back", "Назад по разделам", "Alt+Left"),
+            ("forward", "Вперёд по разделам", "Alt+Right"),
+        )
+        hotkeys_grid = QGridLayout()
+        hotkeys_grid.setHorizontalSpacing(14)
+        hotkeys_grid.setVerticalSpacing(8)
+        self.hotkey_edits = {}
+        for index, (key, label, default_sequence) in enumerate(hotkey_specs):
+            row, column = divmod(index, 2)
+            holder = QWidget()
+            holder_layout = QVBoxLayout(holder)
+            holder_layout.setContentsMargins(0, 0, 0, 0)
+            holder_layout.setSpacing(3)
+            holder_layout.addWidget(QLabel(label))
+            editor = QKeySequenceEdit()
+            stored = str(self.settings.value(f"hotkeys/{key}", default_sequence))
+            editor.setKeySequence(QKeySequence(stored))
+            editor.setToolTip("Кликни по полю и нажми новое сочетание клавиш. Пустое поле отключает действие.")
+            editor.setEnabled(self.hotkeys_enabled_check.isChecked() and self.advanced_hotkeys_check.isChecked())
+            editor.keySequenceChanged.connect(self._hotkey_key_changed)
+            self.hotkey_edits[key] = editor
+            holder_layout.addWidget(editor)
+            hotkeys_grid.addWidget(holder, row, column)
+        hotkeys_box.addLayout(hotkeys_grid)
+        hotkeys_hint = QLabel("Расширенные сочетания действуют только при включённых обеих настройках. F5 запускает игру с главной страницы; Ctrl+1…5 переключают разделы.")
+        hotkeys_hint.setObjectName("Muted")
+        hotkeys_hint.setWordWrap(True)
+        hotkeys_box.addWidget(hotkeys_hint)
+        self.hotkeys_enabled_check.toggled.connect(self._hotkeys_master_changed)
+        self.advanced_hotkeys_check.toggled.connect(self._hotkeys_advanced_changed)
+        layout.addWidget(hotkeys_card)
 
         versions_card, versions_box = self._section_card(
             "Список версий Minecraft",
@@ -1065,6 +1309,7 @@ class LauncherWindow(QMainWindow):
             ("sidebar_width", "Ширина боковой панели", 190, 330),
             ("titlebar_height", "Высота верхней панели", 48, 100),
             ("shadow_strength", "Сила теней (%)", 0, 100),
+            ("panel_opacity", "Непрозрачность панелей (%)", 35, 100),
         )
         for index, (key, label, minimum, maximum) in enumerate(slider_specs):
             row, col = divmod(index, 2)
@@ -1087,6 +1332,10 @@ class LauncherWindow(QMainWindow):
             self.appearance_sliders[key] = slider
             sliders_grid.addWidget(holder, row, col)
         appearance_box.addLayout(sliders_grid)
+        opacity_note = QLabel("35% — панели сильнее просвечивают фон · 100% — панели почти непрозрачные.")
+        opacity_note.setObjectName("Muted")
+        opacity_note.setWordWrap(True)
+        appearance_box.addWidget(opacity_note)
 
         options_row = QHBoxLayout()
         self.gradient_check = QCheckBox("Градиентные кнопки")
@@ -1107,6 +1356,19 @@ class LauncherWindow(QMainWindow):
         options_row.addWidget(self.low_effects_check)
         options_row.addStretch(1)
         appearance_box.addLayout(options_row)
+        wallpaper_row = QHBoxLayout()
+        wallpaper_row.addWidget(QLabel("Фоновое изображение"))
+        self.background_image_label = QLabel("Стандартный фон Fiercy")
+        self.background_image_label.setObjectName("Muted")
+        self.background_image_label.setWordWrap(True)
+        wallpaper_row.addWidget(self.background_image_label, 1)
+        choose_background = self._button("Выбрать свою фотографию")
+        choose_background.clicked.connect(self.choose_background_image)
+        wallpaper_row.addWidget(choose_background)
+        clear_background = self._button("Убрать фото", danger=True)
+        clear_background.clicked.connect(self.clear_background_image)
+        wallpaper_row.addWidget(clear_background)
+        appearance_box.addLayout(wallpaper_row)
         font_row = QHBoxLayout()
         font_row.addWidget(QLabel("Шрифт интерфейса"))
         self.font_combo = WheelSafeFontComboBox()
@@ -1186,6 +1448,7 @@ class LauncherWindow(QMainWindow):
     def _reset_appearance(self):
         self.appearance_palette = dict(PRESETS["dark"])
         self.appearance_geometry = dict(self.appearance_manager.load()["geometry"])
+        self.appearance_geometry["background_image"] = ""
         for key, slider in self.appearance_sliders.items():
             slider.setValue(int(self.appearance_geometry[key]))
         self.gradient_check.setChecked(True)
@@ -1193,9 +1456,43 @@ class LauncherWindow(QMainWindow):
         self.shadows_check.setChecked(False)
         self.low_effects_check.setChecked(True)
         self.theme_combo.setCurrentIndex(self.theme_combo.findData("dark"))
+        self._refresh_background_image_preview()
         self._refresh_appearance_color_buttons()
         self._appearance_adjusted()
         self._notify("Оформление сброшено", "Возвращена стандартная тёмная тема Fiercy.", "success")
+
+    def choose_background_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выбрать фоновое изображение", str(Path.home()),
+            "Изображения (*.png *.jpg *.jpeg *.webp *.bmp);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        resolved = str(Path(path).expanduser().resolve())
+        if not self.wallpaper_label.set_image(resolved):
+            self._notify("Не удалось открыть изображение",
+                         "Выбери корректный файл PNG, JPG, WEBP или BMP.", "warning")
+            return
+        self.appearance_geometry["background_image"] = resolved
+        self._refresh_background_image_preview()
+        self._appearance_adjusted()
+
+    def clear_background_image(self):
+        self.appearance_geometry["background_image"] = ""
+        self.wallpaper_label.clear_image()
+        self._refresh_background_image_preview()
+        self._appearance_adjusted()
+
+    def _refresh_background_image_preview(self):
+        path = str(self.appearance_geometry.get("background_image", "") or "").strip()
+        theme = str(self.theme_combo.currentData() or "dark") if hasattr(self, "theme_combo") else "dark"
+        self.wallpaper_label.set_overlay_alpha(35 if theme == "light" else 105)
+        self.wallpaper_label.set_corner_radius(int(self.appearance_geometry.get("window_radius", 22)))
+        if path and Path(path).is_file() and self.wallpaper_label.set_image(path):
+            self.background_image_label.setText(Path(path).name)
+            return
+        self.background_image_label.setText("Стандартный фон Fiercy")
+        self.wallpaper_label.clear_image()
 
 
     def _build_fiercycity_page(self):
@@ -1260,14 +1557,254 @@ class LauncherWindow(QMainWindow):
         layout.addStretch(1)
         return scroll
 
+    def _load_notification_history(self) -> list[dict]:
+        try:
+            raw = self.settings.value("notifications/history", "[]")
+            records = json.loads(str(raw or "[]"))
+            if isinstance(records, list):
+                return [dict(item) for item in records[-100:] if isinstance(item, dict)]
+        except (TypeError, ValueError):
+            log.warning("История уведомлений повреждена; будет создана новая.")
+        return []
+
+    def _load_notification_filters(self) -> dict:
+        defaults = {"info": True, "success": True, "warning": True, "error": True}
+        try:
+            raw = self.settings.value("notifications/filters", "")
+            saved = json.loads(str(raw)) if raw else {}
+            if isinstance(saved, dict):
+                defaults.update({key: bool(saved.get(key, True)) for key in defaults})
+        except (TypeError, ValueError):
+            pass
+        return defaults
+
+    def _persist_notifications(self) -> None:
+        self.settings.setValue("notifications/history", json.dumps(self._notifications[-100:], ensure_ascii=False))
+        self.settings.sync()
+
+    def _update_notification_counter(self) -> None:
+        unread = sum(1 for item in self._notifications
+                     if not item.get("read", False)
+                     and self._notification_filters.get(str(item.get("kind", "info")), True))
+        if hasattr(self, "title_bar"):
+            self.title_bar.notifications_button.setText(f"🔔  {unread}")
+            self.title_bar.notifications_button.setToolTip(f"История уведомлений · непрочитано: {unread}")
+
+    def _refresh_notifications(self) -> None:
+        if hasattr(self, "activity_drawer"):
+            self.activity_drawer.update_notifications(self._notifications)
+        self._update_notification_counter()
+
+    def _set_notification_filters(self, filters: dict) -> None:
+        self._notification_filters = {key: bool(filters.get(key, True))
+                                      for key in ("info", "success", "warning", "error")}
+        self.settings.setValue("notifications/filters", json.dumps(self._notification_filters))
+        self.settings.sync()
+        self._refresh_notifications()
+
+    def _mark_notification_read(self, notification_id: str) -> None:
+        changed = False
+        for item in self._notifications:
+            if str(item.get("id", "")) == str(notification_id) and not item.get("read", False):
+                item["read"] = True
+                changed = True
+                break
+        if changed:
+            self._persist_notifications()
+            self._refresh_notifications()
+
+    def _clear_read_notifications(self) -> None:
+        before = len(self._notifications)
+        self._notifications = [item for item in self._notifications if not item.get("read", False)]
+        if len(self._notifications) != before:
+            self._persist_notifications()
+            self._refresh_notifications()
+
+    def toggle_downloads(self) -> None:
+        if not hasattr(self, "activity_drawer"):
+            return
+        if self.activity_drawer.isVisible() and self.activity_drawer.pages.currentIndex() == 0:
+            self.activity_drawer.hide()
+            return
+        self._position_activity_drawer()
+        self.activity_drawer.show_downloads()
+        self._refresh_activity_drawer()
+
+    def toggle_notifications(self) -> None:
+        if not hasattr(self, "activity_drawer"):
+            return
+        if self.activity_drawer.isVisible() and self.activity_drawer.pages.currentIndex() == 1:
+            self.activity_drawer.hide()
+            return
+        self._position_activity_drawer()
+        self.activity_drawer.show_notifications()
+        self._refresh_notifications()
+
+    def _position_activity_drawer(self) -> None:
+        drawer = getattr(self, "activity_drawer", None)
+        if drawer is None:
+            return
+        parent = self.window_root
+        width = min(408, max(300, parent.width() - 24))
+        drawer.setFixedWidth(width)
+        drawer.setFixedHeight(max(240, parent.height() - 24))
+        drawer.move(max(12, parent.width() - width - 12), 12)
+
+    def _schedule_activity_refresh(self) -> None:
+        if hasattr(self, "_activity_refresh_timer") and not self._activity_refresh_timer.isActive():
+            self._activity_refresh_timer.start()
+
+    def _refresh_activity_drawer(self) -> None:
+        drawer = getattr(self, "activity_drawer", None)
+        if drawer is None:
+            return
+        safe_tasks = []
+        for task in self._download_tasks.values():
+            safe_tasks.append({key: value for key, value in task.items()
+                               if key not in {"control", "worker", "cancel_callback"}})
+        drawer.update_downloads(safe_tasks)
+        active = sum(1 for item in safe_tasks if item.get("state") in {"queued", "downloading", "paused", "cancelling"})
+        if hasattr(self, "downloads_button"):
+            self.downloads_button.setText(f"↓    Загрузки  ·  {active}" if active else "↓    Загрузки")
+        self._update_notification_counter()
+        if drawer.isVisible():
+            self._position_activity_drawer()
+
+    def _register_download_task(self, task_id: str, title: str, details: str = "",
+                                control=None, worker=None, cancel_callback=None, state: str = "queued") -> None:
+        self._download_tasks[str(task_id)] = {
+            "id": str(task_id), "title": str(title), "details": str(details),
+            "state": state, "state_label": {"queued": "В очереди", "downloading": "Скачивается"}.get(state, state),
+            "progress": -1, "speed_label": "", "can_pause": bool(control is not None),
+            "control": control, "worker": worker, "cancel_callback": cancel_callback,
+        }
+        if worker is not None:
+            self._download_task_workers[str(task_id)] = worker
+        self._schedule_activity_refresh()
+
+    def _update_download_task(self, task_id: str, **changes) -> None:
+        task = self._download_tasks.get(str(task_id))
+        if task is None:
+            return
+        task.update(changes)
+        labels = {"queued": "В очереди", "downloading": "Скачивается", "paused": "На паузе",
+                  "cancelling": "Останавливается", "completed": "Готово", "failed": "Ошибка",
+                  "cancelled": "Отменено"}
+        task["state_label"] = labels.get(task.get("state"), str(task.get("state", "")))
+        if task.get("state") in {"completed", "failed", "cancelled"}:
+            task["can_pause"] = False
+            task["worker"] = None
+            task["control"] = None
+            task["cancel_callback"] = None
+            self._download_task_workers.pop(str(task_id), None)
+        self._schedule_activity_refresh()
+
+    def _parse_download_progress(self, task_id: str, message: str, percent: int = -1) -> None:
+        text = str(message or "")
+        state = self._download_tasks.get(str(task_id), {}).get("state", "downloading")
+        match = re.search(r"(?P<pct>\d{1,3})%\s*·\s*(?P<done>[\d.,]+)\s*/\s*(?P<total>[\d.,]+)\s*МБ.*?(?P<speed>[\d.,]+)\s*МБ/с", text)
+        speed_match = re.search(r"(?P<speed>[\d.,]+)\s*МБ/с", text)
+        if match:
+            parsed_pct = int(match.group("pct"))
+            speed = match.group("speed").replace(",", ".")
+            details = text[:260]
+            self._update_download_task(task_id, progress=parsed_pct, details=details,
+                                      speed_label=f"{speed} МБ/с")
+        else:
+            speed_label = f"{speed_match.group('speed').replace(',', '.')} МБ/с" if speed_match else ""
+            self._update_download_task(task_id, progress=max(-1, min(100, int(percent))),
+                                      details=text[:260], speed_label=speed_label)
+        if state == "paused":
+            self._update_download_task(task_id, state="paused")
+
+    def _set_download_speed_limit(self, megabytes_per_second: int) -> None:
+        limit = max(0, min(1000, int(megabytes_per_second or 0)))
+        self.download_rate_limiter.set_limit_mbps(limit)
+        self.settings.setValue("downloads/max_speed_mbps", limit)
+        self.settings.sync()
+        log.info("Ограничение скорости загрузки: %s", "без лимита" if limit == 0 else f"{limit} МБ/с")
+
+    def pause_download_task(self, task_id: str) -> None:
+        task = self._download_tasks.get(str(task_id))
+        if not task or task.get("state") not in {"downloading", "paused"}:
+            return
+        control = task.get("control")
+        worker = task.get("worker")
+        if task.get("state") == "paused":
+            if control is not None:
+                control.resume()
+            elif worker is not None and callable(getattr(worker, "resume", None)):
+                worker.resume()
+            self._update_download_task(task_id, state="downloading")
+        else:
+            if control is not None:
+                control.pause()
+            elif worker is not None and callable(getattr(worker, "pause", None)):
+                worker.pause()
+            else:
+                self._notify("Пауза не поддерживается", "Эту операцию нельзя приостановить на текущем этапе.", "warning")
+                return
+            self._update_download_task(task_id, state="paused")
+
+    def resume_download_task(self, task_id: str) -> None:
+        task = self._download_tasks.get(str(task_id))
+        if not task or task.get("state") != "paused":
+            return
+        control = task.get("control")
+        worker = task.get("worker")
+        if control is not None:
+            control.resume()
+        elif worker is not None and callable(getattr(worker, "resume", None)):
+            worker.resume()
+        self._update_download_task(task_id, state="downloading")
+
+    def cancel_download_task(self, task_id: str) -> None:
+        task = self._download_tasks.get(str(task_id))
+        if task is None:
+            return
+        if task.get("state") in {"completed", "failed", "cancelled"}:
+            self.remove_download_task(task_id)
+            return
+        callback = task.get("cancel_callback")
+        if callable(callback):
+            callback(str(task_id))
+            return
+        worker = task.get("worker")
+        if worker is not None and callable(getattr(worker, "cancel", None)):
+            worker.cancel()
+            self._update_download_task(task_id, state="cancelling", details="Останавливаем загрузку…")
+
+    def remove_download_task(self, task_id: str) -> None:
+        task = self._download_tasks.get(str(task_id))
+        if task is None:
+            return
+        if task.get("state") in {"queued", "downloading", "paused", "cancelling"}:
+            self.cancel_download_task(task_id)
+            return
+        self._download_tasks.pop(str(task_id), None)
+        self._download_task_workers.pop(str(task_id), None)
+        self._schedule_activity_refresh()
+
     def _notify(self, title: str, message: str, kind: str = "info", duration: int = 4500):
+        kind = kind if kind in {"info", "success", "warning", "error"} else "info"
         log_method = logging.error if kind == "error" else (logging.warning if kind == "warning" else logging.info)
         log_method("%s: %s", title, message.replace("\n", " | "))
-        if hasattr(self, "toast"):
+        record = {
+            "id": uuid.uuid4().hex,
+            "time": time.time(),
+            "time_label": time.strftime("%d.%m.%Y %H:%M", time.localtime()),
+            "title": str(title)[:100], "message": str(message)[:1000],
+            "kind": kind, "read": False,
+        }
+        self._notifications.append(record)
+        self._notifications = self._notifications[-100:]
+        self._persist_notifications()
+        self._refresh_notifications()
+        if hasattr(self, "toast") and self._notification_filters.get(kind, True):
             self.toast.show_message(title, message, kind, duration)
 
     # -------------------------- Navigation / theme --------------------------
-    def navigate(self, index: int):
+    def navigate(self, index: int, remember: bool = True):
         if index < 0 or index >= self.stack.count():
             return
         current = self.stack.currentIndex()
@@ -1278,6 +1815,10 @@ class LauncherWindow(QMainWindow):
                 "warning", 6500,
             )
             return
+        if current != index and remember and hasattr(self, "_navigation_history"):
+            self._navigation_history.append(current)
+            self._navigation_history = self._navigation_history[-40:]
+            self._forward_history.clear()
         # Переключаем страницы без opacity/compositing-анимации. На слабых
         # интегрированных GPU QGraphicsOpacityEffect создаёт off-screen буфер
         # всей страницы и заметно снижает FPS при переходах между каталогами.
@@ -1293,6 +1834,151 @@ class LauncherWindow(QMainWindow):
         elif index == 4:
             self._refresh_logs()
 
+    # -------------------------- Keyboard and mouse navigation --------------------------
+    def _hotkeys_master_changed(self, enabled: bool) -> None:
+        self.advanced_hotkeys_check.setEnabled(bool(enabled))
+        for editor in self.hotkey_edits.values():
+            editor.setEnabled(bool(enabled and self.advanced_hotkeys_check.isChecked()))
+        self._configure_hotkeys()
+        self._settings_changed()
+
+    def _hotkeys_advanced_changed(self, enabled: bool) -> None:
+        master = self.hotkeys_enabled_check.isChecked()
+        for editor in self.hotkey_edits.values():
+            editor.setEnabled(bool(master and enabled))
+        self._configure_hotkeys()
+        self._settings_changed()
+
+    def _hotkey_key_changed(self, *_args) -> None:
+        self._configure_hotkeys()
+        self._settings_changed()
+
+    def _configure_hotkeys(self) -> None:
+        enabled = bool(getattr(self, "hotkeys_enabled_check", None) and self.hotkeys_enabled_check.isChecked())
+        app = QApplication.instance()
+        if app is not None:
+            if enabled and not self._hotkey_filter_installed:
+                app.installEventFilter(self)
+                self._hotkey_filter_installed = True
+            elif not enabled and self._hotkey_filter_installed:
+                app.removeEventFilter(self)
+                self._hotkey_filter_installed = False
+        for shortcut in self._hotkey_shortcuts:
+            shortcut.setEnabled(False)
+            shortcut.deleteLater()
+        self._hotkey_shortcuts.clear()
+        if not enabled or not self.advanced_hotkeys_check.isChecked():
+            return
+        focused = QApplication.focusWidget()
+        if focused is not None and any(
+                focused is editor or editor.isAncestorOf(focused)
+                for editor in self.hotkey_edits.values()):
+            return
+        actions = {
+            "page_game": lambda: self.navigate(0),
+            "page_mods": lambda: self.navigate(1),
+            "page_city": lambda: self.navigate(2),
+            "page_settings": lambda: self.navigate(3),
+            "page_updates": lambda: self.navigate(4),
+            "launch": self.launch_selected,
+            "downloads": self.toggle_downloads,
+            "notifications": self.toggle_notifications,
+            "search": self._focus_mod_search,
+            "back": self._hotkey_go_back,
+            "forward": self._hotkey_go_forward,
+        }
+        for key, callback in actions.items():
+            editor = self.hotkey_edits.get(key)
+            sequence = editor.keySequence() if editor is not None else QKeySequence()
+            if sequence.isEmpty():
+                continue
+            shortcut = QShortcut(sequence, self)
+            shortcut.setContext(Qt.ApplicationShortcut)
+            shortcut.activated.connect(callback)
+            self._hotkey_shortcuts.append(shortcut)
+
+    def _focus_mod_search(self) -> None:
+        self.navigate(1)
+        if hasattr(self, "profile_workspace"):
+            self._switch_profile_workspace(0, search=False)
+        if hasattr(self, "mod_search_edit"):
+            self.mod_search_edit.setFocus(Qt.ShortcutFocusReason)
+            self.mod_search_edit.selectAll()
+
+    def _hotkey_go_back(self) -> None:
+        if hasattr(self, "activity_drawer") and self.activity_drawer.isVisible():
+            self.activity_drawer.hide()
+            return
+        page = getattr(self, "modrinth_details_page", None)
+        if page is not None and page.close_preview():
+            return
+        if page is not None and page.isVisible():
+            self._close_modrinth_details()
+            return
+        if self._navigation_history:
+            previous = self._navigation_history[-1]
+            current = self.stack.currentIndex()
+            # Do not discard a history entry when the settings dirty guard blocks navigation.
+            self.navigate(previous, remember=False)
+            if self.stack.currentIndex() == previous and previous != current:
+                self._navigation_history.pop()
+                self._forward_history.append(current)
+
+    def _hotkey_go_forward(self) -> None:
+        if hasattr(self, "activity_drawer") and self.activity_drawer.isVisible():
+            self.activity_drawer.hide()
+        if self._forward_history:
+            target = self._forward_history[-1]
+            current = self.stack.currentIndex()
+            if target != current:
+                self.navigate(target, remember=False)
+                if self.stack.currentIndex() == target:
+                    self._forward_history.pop()
+                    self._navigation_history.append(current)
+
+    def eventFilter(self, watched, event):
+        if isinstance(watched, QKeySequenceEdit) and event.type() == QEvent.FocusOut:
+            QTimer.singleShot(0, self._configure_hotkeys)
+        active_window = QApplication.activeWindow()
+        belongs_to_launcher = active_window is self
+        if isinstance(active_window, QWidget) and active_window is not self:
+            try:
+                belongs_to_launcher = self.isAncestorOf(active_window)
+            except RuntimeError:
+                belongs_to_launcher = False
+        if self.isVisible() and belongs_to_launcher and self.hotkeys_enabled_check.isChecked():
+            if event.type() == QEvent.MouseButtonPress:
+                button = event.button()
+                if button in (Qt.XButton1, Qt.XButton2) and active_window is not self:
+                    if button == Qt.XButton1 and callable(getattr(active_window, "reject", None)):
+                        active_window.reject()
+                    elif callable(getattr(active_window, "close", None)):
+                        active_window.close()
+                    return True
+                if button == Qt.XButton1:
+                    self._hotkey_go_back()
+                    return True
+                if button == Qt.XButton2:
+                    self._hotkey_go_forward()
+                    return True
+            elif event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                if event.modifiers() == Qt.NoModifier:
+                    if active_window is not self:
+                        reject = getattr(active_window, "reject", None)
+                        if callable(reject):
+                            reject()
+                            return True
+                    page = getattr(self, "modrinth_details_page", None)
+                    if hasattr(self, "activity_drawer") and self.activity_drawer.isVisible():
+                        self.activity_drawer.hide()
+                        return True
+                    if page is not None and page.close_preview():
+                        return True
+                    if page is not None and page.isVisible():
+                        self._close_modrinth_details()
+                        return True
+        return super().eventFilter(watched, event)
+
     def apply_theme(self):
         try:
             data = {
@@ -1300,13 +1986,28 @@ class LauncherWindow(QMainWindow):
                 "palette": dict(self.appearance_palette),
                 "geometry": dict(self.appearance_geometry),
             }
+            # В узком окне плотность автоматически уменьшается, но не ниже
+            # читаемого порога. Сохранённая пользователем плотность не меняется.
+            effective_geometry = dict(self.appearance_geometry)
+            width = max(1, self.width())
+            configured_density = int(effective_geometry.get("density", 100))
+            responsive_density = 100 if width >= 1240 else (92 if width >= 1020 else (86 if width >= 850 else 80))
+            effective_geometry["density"] = min(configured_density, responsive_density)
+            data["geometry"] = effective_geometry
             self.setStyleSheet(self.appearance_manager.stylesheet(data))
+            self._effective_density = effective_geometry["density"]
             if hasattr(self, "sidebar"):
-                self.sidebar.setFixedWidth(int(self.appearance_geometry.get("sidebar_width", 236)))
+                configured_sidebar = int(self.appearance_geometry.get("sidebar_width", 216))
+                responsive_sidebar = min(configured_sidebar, max(164, min(216, round(width * 0.205))))
+                self.sidebar.setFixedWidth(responsive_sidebar)
+            if hasattr(self, "content_layout"):
+                margin = 10 if width < 900 else (13 if width < 1100 else 18)
+                self.content_layout.setContentsMargins(margin, 12, margin, 9)
             if hasattr(self, "title_bar"):
                 self.title_bar.setFixedHeight(int(self.appearance_geometry.get("titlebar_height", 66)))
             self._update_card_shadows()
             self._refresh_appearance_color_buttons()
+            self._refresh_background_image_preview()
             if hasattr(self, "toast") and self.toast.isVisible():
                 self.toast.reposition()
         except Exception:
@@ -1597,14 +2298,53 @@ class LauncherWindow(QMainWindow):
         self._install_profile_id = profile_id
         profile = self.profile_manager.get(profile_id) if profile_id else {"name": "Обычный Minecraft"}
         target_instance = instance_dir or self.game_root
+        install_control = DownloadTaskControl()
+        self._install_task_id = "minecraft-" + uuid.uuid4().hex
         self.install_worker = InstallMinecraftWorker(
             profile or {}, str(self.game_root), str(target_instance), str(minecraft_version),
             loader or "vanilla", loader_version or "", java_path, auto_java,
+            download_control=install_control, rate_limiter=self.download_rate_limiter,
+        )
+        task_title = (f"Minecraft {minecraft_version}" if (loader or "vanilla") == "vanilla"
+                      else f"Minecraft {minecraft_version} + {(loader or '').title()}")
+        self._register_download_task(
+            self._install_task_id, task_title,
+            f"Установка в профиль: {(profile or {}).get('name', 'Обычная игра')}",
+            control=install_control, worker=self.install_worker, state="downloading",
         )
         self.install_worker.progress.connect(self._install_progress)
         self.install_worker.completed.connect(self._install_completed)
         self.install_worker.failed.connect(self._install_failed)
+        self.install_worker.cancelled.connect(self._install_cancelled)
+        self.cancel_install_button.setVisible(not bool(profile_id))
+        self.cancel_profile_install_button.setVisible(bool(profile_id))
+        self.cancel_install_button.setEnabled(True)
+        self.cancel_profile_install_button.setEnabled(True)
         self.install_worker.start()
+
+    def cancel_install(self):
+        worker = self.install_worker
+        if worker is None or not worker.isRunning():
+            return
+        worker.cancel()
+        self.cancel_install_button.setEnabled(False)
+        self.cancel_profile_install_button.setEnabled(False)
+        self.cancel_install_button.setText("Остановка…")
+        self.cancel_profile_install_button.setText("Остановка…")
+        self.install_status.setText("Останавливаем загрузку и завершаем текущую сетевую операцию…")
+        if self._install_profile_id and hasattr(self, "profile_setup_status"):
+            self.profile_setup_status.setText("Останавливаем установку сборки…")
+        self._set_status("отмена загрузки")
+
+    def _reset_install_controls(self):
+        enabled = not (self.maintenance_mode or self.minimum_version_block)
+        self.install_button.setEnabled(enabled)
+        if hasattr(self, "install_profile_button"):
+            self.install_profile_button.setEnabled(self._has_active_profile() and enabled)
+        for button in (self.cancel_install_button, self.cancel_profile_install_button):
+            button.hide()
+            button.setEnabled(True)
+            button.setText("Отменить загрузку")
 
     def install_selected(self):
         """Ставит чистую Vanilla-версию в обычный каталог игры, без профиля."""
@@ -1640,16 +2380,19 @@ class LauncherWindow(QMainWindow):
     def _install_progress(self, percent: int, status: str):
         if percent >= 0:
             self.install_progress.setValue(percent)
+        if self._install_task_id:
+            self._parse_download_progress(self._install_task_id, status, percent)
         self.install_status.setText(status)
         if hasattr(self, "profile_setup_status") and self._install_profile_id:
             self.profile_setup_status.setText(status)
         self._set_status(status)
 
     def _install_completed(self, result: dict):
-        self.install_button.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
-        if hasattr(self, "install_profile_button"):
-            self.install_profile_button.setEnabled(
-                self._has_active_profile() and not (self.maintenance_mode or self.minimum_version_block))
+        if self._install_task_id:
+            self._update_download_task(self._install_task_id, state="completed", progress=100,
+                                       details=f"Установлено: {result.get('installed_version_id', '')}", speed_label="")
+        self._install_task_id = ""
+        self._reset_install_controls()
         self.install_progress.setValue(100)
         self.install_status.setText(f"Готово: {result['installed_version_id']}")
         profile_id = self._install_profile_id
@@ -1671,16 +2414,30 @@ class LauncherWindow(QMainWindow):
         self._set_status("установка завершена")
 
     def _install_failed(self, message: str):
-        self.install_button.setEnabled(not (self.maintenance_mode or self.minimum_version_block))
-        if hasattr(self, "install_profile_button"):
-            self.install_profile_button.setEnabled(
-                self._has_active_profile() and not (self.maintenance_mode or self.minimum_version_block))
+        if self._install_task_id:
+            self._update_download_task(self._install_task_id, state="failed", details=str(message)[:260], speed_label="")
+        self._install_task_id = ""
+        self._reset_install_controls()
         self.install_status.setText("Установка не завершена. Подробности в логах.")
         if hasattr(self, "profile_setup_status") and self._install_profile_id:
             self.profile_setup_status.setText("Установка не завершена. Подробности в логах.")
         self._install_profile_id = None
         self._set_status("ошибка установки")
         self._notify("Не удалось установить Minecraft", message, "error", 8000)
+
+    def _install_cancelled(self):
+        if self._install_task_id:
+            self._update_download_task(self._install_task_id, state="cancelled", details="Загрузка остановлена пользователем.", speed_label="")
+        self._install_task_id = ""
+        profile_id = self._install_profile_id
+        self._install_profile_id = None
+        self._reset_install_controls()
+        self.install_progress.setValue(0)
+        self.install_status.setText("Загрузка остановлена. Можно безопасно начать установку заново.")
+        if hasattr(self, "profile_setup_status") and profile_id:
+            self.profile_setup_status.setText("Установка остановлена пользователем. Сборка не отмечена как установленная.")
+        self._set_status("загрузка остановлена")
+        self._notify("Загрузка остановлена", "Незавершённый сетевой файл не будет принят как установленный.", "info")
 
     def _build_launch_account(self) -> dict | None:
         nickname = self.nickname_edit.text().strip() if hasattr(self, "nickname_edit") else ""
@@ -1905,6 +2662,10 @@ class LauncherWindow(QMainWindow):
             self.settings.setValue("versions/show_snapshots", self.show_snapshots_check.isChecked())
             self.settings.setValue("discord/enabled", self.discord_presence_check.isChecked())
             self.settings.setValue("discord/client_id", self.discord_client_id_edit.text().strip())
+            self.settings.setValue("hotkeys/enabled", self.hotkeys_enabled_check.isChecked())
+            self.settings.setValue("hotkeys/advanced", self.advanced_hotkeys_check.isChecked())
+            for key, editor in self.hotkey_edits.items():
+                self.settings.setValue(f"hotkeys/{key}", editor.keySequence().toString(QKeySequence.PortableText))
             self.settings.setValue("profile/nickname", self.nickname_edit.text().strip())
             self.appearance_geometry = self._collect_appearance_geometry()
             mode = str(self.theme_combo.currentData() or "custom")
@@ -2796,48 +3557,107 @@ class LauncherWindow(QMainWindow):
         self._notify("Операция Modrinth не выполнена", message, "error", 7500)
 
     def open_modrinth_project_details(self, project: dict):
-        project_type = str(project.get("project_type", "mod"))
-        if not self._has_catalog_target_profile() and project_type != "modpack":
-            self._notify("Сборка не выбрана", "Для модов сначала выбери сборку в верхней части каталога.", "info")
-            return
-        if self.mod_details_worker and self.mod_details_worker.isRunning():
-            return
-        game_version, loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "")
-        self._pending_details_project = dict(project)
-        self.mod_status_label.setText(f"Загружаем описание и версии «{project.get('title', '')}»…")
-        worker = ModrinthProjectDetailsWorker(project.get("project_id", ""), game_version, loader,
-                                              project_type, self)
-        worker.loaded.connect(self._mod_details_loaded)
-        worker.failed.connect(self._mod_operation_failed)
-        self._retain_worker(worker)
-        self.mod_details_worker = worker
-        worker.start()
+        try:
+            if not isinstance(project, dict):
+                raise ValueError("Карточка проекта имеет неверный формат.")
+            project = dict(project)
+            project_type = str(project.get("project_type", "mod")).lower().strip()
+            project_id = str(project.get("project_id", "")).strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{2,64}", project_id):
+                raise ValueError("Не удалось определить корректный ID проекта Modrinth.")
+            if project_type not in {"mod", "resourcepack", "shader", "modpack"}:
+                raise ValueError("Этот тип проекта Modrinth пока не поддерживается.")
+            if not self._has_catalog_target_profile() and project_type != "modpack":
+                self._notify("Сборка не выбрана", "Для модов сначала выбери сборку в верхней части каталога.", "info")
+                return
+            if self.mod_details_worker and self.mod_details_worker.isRunning():
+                return
+            game_version, loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "")
+            self._pending_details_project = project
+            title = str(project.get("title", "Без названия"))[:120]
+            self.mod_status_label.setText(f"Загружаем описание и версии «{title}»…")
+            worker = ModrinthProjectDetailsWorker(project_id, game_version, loader, project_type, self)
+            worker.loaded.connect(self._mod_details_loaded)
+            worker.failed.connect(self._mod_operation_failed)
+            self._retain_worker(worker)
+            self.mod_details_worker = worker
+            worker.start()
+        except Exception as exc:
+            log.exception("Не удалось открыть карточку проекта Modrinth")
+            self._notify("Не удалось открыть проект", str(exc), "error", 7000)
 
     def _mod_details_loaded(self, payload: dict):
-        project = dict(payload.get("project", {}) or {})
-        project.update({key: value for key, value in getattr(self, "_pending_details_project", {}).items()
-                        if key not in project or project.get(key) in (None, "", 0)})
-        versions = payload.get("versions", []) or []
-        dialog = ModrinthProjectDetailsDialog(project, versions, self)
-        _game_version, active_loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "vanilla")
-        if str(project.get("project_type", "mod")) == "mod" and active_loader == "vanilla":
-            dialog.install_button.setEnabled(False)
-            dialog.install_button.setText("Сначала выбери загрузчик")
-            dialog.install_button.setToolTip(
-                "Для установки мода выбери Fabric, Forge, NeoForge или Quilt в параметрах сборки"
+        try:
+            if not isinstance(payload, dict):
+                raise ValueError("Modrinth вернул неверный формат данных страницы.")
+            project = payload.get("project", {})
+            if not isinstance(project, dict):
+                raise ValueError("Modrinth вернул неверное описание проекта.")
+            project = dict(project)
+            pending = getattr(self, "_pending_details_project", {})
+            if isinstance(pending, dict):
+                project.update({key: value for key, value in pending.items()
+                                if key not in project or project.get(key) in (None, "", 0)})
+            versions = payload.get("versions", [])
+            if not isinstance(versions, list):
+                versions = []
+            versions = [item for item in versions if isinstance(item, dict)]
+            project.setdefault("project_type", str(getattr(self, "_pending_details_project", {}).get(
+                "project_type", "mod")))
+
+            self._close_modrinth_details()
+            page = ModrinthProjectDetailsDialog(project, versions, self)
+            page.setStyleSheet(self.styleSheet())
+            page.backRequested.connect(self._close_modrinth_details)
+            page.installRequested.connect(
+                lambda version_id, selected=dict(project): self._install_from_modrinth_details(selected, version_id)
             )
-        dialog.setStyleSheet(self.styleSheet())
-        icon_url = str(project.get("icon_url", ""))
-        if icon_url:
-            # Icon downloads belong to the main window, not the modal dialog;
-            # closing the dialog must never destroy a running QThread.
-            worker = ModrinthImageWorker(icon_url, self)
-            worker.loaded.connect(dialog.set_project_icon)
-            worker.finished.connect(lambda current=worker: self._release_aux_image_worker(current))
-            self.mod_image_workers.append(worker)
-            worker.start()
-        if dialog.exec_() == dialog.Accepted:
-            self.install_modrinth_project(project, dialog.selected_version_id())
+            _game_version, active_loader = self._catalog_mod_compatibility() if self._has_catalog_target_profile() else ("", "vanilla")
+            if str(project.get("project_type", "mod")) == "mod" and active_loader == "vanilla":
+                page.install_button.setEnabled(False)
+                page.install_button.setText("Сначала выбери загрузчик")
+                page.install_button.setToolTip(
+                    "Для установки мода выбери Fabric, Forge, NeoForge или Quilt в параметрах сборки"
+                )
+            self.modrinth_details_page = page
+            self.mod_catalog_stack.addWidget(page)
+            self.mod_catalog_stack.setCurrentWidget(page)
+            self.catalog_controls_widget.hide()
+
+            icon_url = str(project.get("icon_url", ""))
+            if icon_url.startswith("https://"):
+                worker = ModrinthImageWorker(icon_url, self)
+                worker.loaded.connect(page.set_project_icon)
+                worker.finished.connect(lambda current=worker: self._release_aux_image_worker(current))
+                self.mod_image_workers.append(worker)
+                self._retain_worker(worker)
+                worker.start()
+        except Exception as exc:
+            log.exception("Не удалось показать страницу подробностей Modrinth")
+            self._notify("Не удалось открыть подробности", str(exc), "error", 7000)
+        finally:
+            self._pending_details_project = {}
+
+    def _install_from_modrinth_details(self, project: dict, version_id: str = ""):
+        self._close_modrinth_details()
+        self.install_modrinth_project(project, version_id)
+
+    def _close_modrinth_details(self):
+        page = getattr(self, "modrinth_details_page", None)
+        if page is not None:
+            try:
+                page.dispose_preview()
+                self.mod_catalog_stack.removeWidget(page)
+                page.hide()
+                page.setParent(None)
+                page.deleteLater()
+            except RuntimeError:
+                pass
+            self.modrinth_details_page = None
+        if hasattr(self, "catalog_controls_widget"):
+            self.catalog_controls_widget.show()
+        if hasattr(self, "mod_catalog_stack") and hasattr(self, "mod_catalog_page"):
+            self.mod_catalog_stack.setCurrentWidget(self.mod_catalog_page)
 
     def install_modrinth_project(self, project: dict, version_id: str = ""):
         project_type = str(project.get("project_type", "mod")).lower()
@@ -2888,8 +3708,16 @@ class LauncherWindow(QMainWindow):
             "version_id": str(version_id or ""),
             "paths": None,
             "error": "",
+            "warnings": [],
+            "control": DownloadTaskControl(),
         }
         self._mod_install_tasks[task_id] = task
+        self._register_download_task(
+            task_id, task["project_name"],
+            f"{project_type.title()} · {task['profile_name'] or 'Загрузка/импорт сборки'}",
+            control=task["control"], cancel_callback=self._cancel_modrinth_task_by_id,
+            state="queued",
+        )
         self._mod_install_queue.append(task_id)
         self.mod_catalog_widget.set_project_state(project_id, "queued", "В очереди")
         self.mod_status_label.setText(
@@ -2907,16 +3735,21 @@ class LauncherWindow(QMainWindow):
             worker = ModrinthInstallWorker(
                 task["project_id"], task["game_version"], task["loader"], task["instance_dir"],
                 task["project_type"], task["version_id"], self,
+                download_control=task["control"], rate_limiter=self.download_rate_limiter,
             )
             task["worker"] = worker
+            self._update_download_task(task_id, worker=worker, state="downloading")
             relay = ModInstallTaskRelay(self)
             task["relay"] = relay
             relay.result.connect(self._mod_install_worker_result)
             relay.progress.connect(self._mod_install_progress)
+            relay.warnings.connect(self._mod_install_worker_warnings)
             relay.finished.connect(self._mod_install_worker_finished)
             worker.completed.connect(lambda paths, key=task_id, bridge=relay: bridge.result.emit(key, paths, ""))
             worker.failed.connect(lambda message, key=task_id, bridge=relay: bridge.result.emit(key, None, message))
+            worker.cancelled.connect(lambda key=task_id, bridge=relay: bridge.result.emit(key, None, "__cancelled__"))
             worker.progress.connect(lambda message, key=task_id, bridge=relay: bridge.progress.emit(key, str(message)))
+            worker.warnings.connect(lambda items, key=task_id, bridge=relay: bridge.warnings.emit(key, items))
             worker.finished.connect(lambda key=task_id, bridge=relay: bridge.finished.emit(key))
             self._mod_install_active[task_id] = worker
             self._retain_worker(worker)
@@ -2932,6 +3765,33 @@ class LauncherWindow(QMainWindow):
         if task.get("project_type") == "modpack" or task.get("profile_id") == self.catalog_profile_id:
             self.mod_catalog_widget.set_project_state(task["project_id"], "downloading", str(message)[:70])
         self.mod_status_label.setText(str(message))
+        self._parse_download_progress(task_id, str(message), -1)
+
+    def _mod_install_worker_warnings(self, task_id: str, warnings) -> None:
+        task = self._mod_install_tasks.get(task_id)
+        if task is not None:
+            task["warnings"] = [str(item)[:260] for item in list(warnings or [])[:32]]
+
+    def _cancel_modrinth_task_by_id(self, task_id: str) -> None:
+        task = self._mod_install_tasks.get(str(task_id))
+        if task is None:
+            return
+        if task_id in self._mod_install_queue:
+            self._mod_install_queue.remove(task_id)
+            self._mod_install_tasks.pop(task_id, None)
+            self._update_download_task(task_id, state="cancelled", details="Убрано из очереди.", speed_label="")
+            if task.get("project_type") == "modpack" or task.get("profile_id") == self.catalog_profile_id:
+                self.mod_catalog_widget.set_project_state(task["project_id"], "idle", "")
+            self.mod_status_label.setText(f"«{task['project_name']}» убрано из очереди.")
+            self._start_next_mod_installations()
+            return
+        worker = self._mod_install_active.get(task_id)
+        if worker is not None and worker.isRunning():
+            task["cancel_requested"] = True
+            worker.cancel()
+            self._update_download_task(task_id, state="cancelling", details="Останавливаем загрузку…")
+            if task.get("project_type") == "modpack" or task.get("profile_id") == self.catalog_profile_id:
+                self.mod_catalog_widget.set_project_state(task["project_id"], "cancelling", "Остановка…")
 
     def _mod_install_worker_result(self, task_id: str, paths, error: str):
         task = self._mod_install_tasks.get(task_id)
@@ -2999,7 +3859,15 @@ class LauncherWindow(QMainWindow):
         if task is None:
             self._start_next_mod_installations()
             return
+        if task.get("cancel_requested") or task.get("error") == "__cancelled__":
+            self._update_download_task(task_id, state="cancelled", details="Загрузка остановлена пользователем.", speed_label="")
+            if task.get("project_type") == "modpack" or task.get("profile_id") == self.catalog_profile_id:
+                self.mod_catalog_widget.set_project_state(task["project_id"], "idle", "")
+            self.mod_status_label.setText(f"Загрузка «{task['project_name']}» остановлена.")
+            self._start_next_mod_installations()
+            return
         if task.get("error"):
+            self._update_download_task(task_id, state="failed", details=str(task.get("error", ""))[:260], speed_label="")
             if task.get("project_type") == "modpack" or task.get("profile_id") == self.catalog_profile_id:
                 self.mod_catalog_widget.set_project_state(task["project_id"], "failed", "Не удалось скачать")
             message = f"Не удалось установить «{task['project_name']}»: {task['error']}"
@@ -3007,10 +3875,15 @@ class LauncherWindow(QMainWindow):
             self._notify("Не удалось установить мод", message, "error", 7500)
         else:
             paths = list(task.get("paths") or [])
-            if task["project_type"] == "modpack" and paths:
-                self.mod_catalog_widget.set_project_state(task["project_id"], "idle")
-                self._start_downloaded_modpack_import(str(paths[0]), "")
-            elif paths:
+            if not paths:
+                self._update_download_task(task_id, state="failed", details="Modrinth не вернул файлы.", speed_label="")
+                self.mod_catalog_widget.set_project_state(task["project_id"], "failed", "Нет файлов")
+            elif task["project_type"] == "modpack":
+                self.mod_catalog_widget.set_project_state(task["project_id"], "downloading", "Установка сборки")
+                self._start_downloaded_modpack_import(str(paths[0]), "", download_task_id=task_id)
+            else:
+                self._update_download_task(task_id, state="completed", progress=100,
+                                           details="Файлы загружены и проверены.", speed_label="")
                 try:
                     self._write_modrinth_install_metadata(task, paths)
                 except Exception:
@@ -3023,9 +3896,25 @@ class LauncherWindow(QMainWindow):
                 profile_name = task.get("profile_name") or "выбранную папку"
                 self.mod_status_label.setText(f"Установлено в «{profile_name}»: {names}")
                 self._notify("Контент установлен", f"{task['project_name']}\nСборка: {profile_name}\n{names}", "success")
-            else:
-                self.mod_catalog_widget.set_project_state(task["project_id"], "failed", "Нет файлов")
+                if task.get("warnings"):
+                    warning_text = "Основной мод установлен, но некоторые зависимости не удалось скачать автоматически:\n" + "\n".join(task["warnings"][:8])
+                    self._notify("Мод установлен не полностью", warning_text, "warning", 9000)
         self._start_next_mod_installations()
+
+    def cancel_modrinth_install(self, project: dict):
+        if not isinstance(project, dict):
+            return
+        project_id = str(project.get("project_id", "")).strip()
+        project_type = str(project.get("project_type", "mod")).lower()
+        candidates = [
+            (task_id, task) for task_id, task in self._mod_install_tasks.items()
+            if task.get("project_id") == project_id and task.get("project_type") == project_type
+            and (task.get("profile_id") == self.catalog_profile_id or project_type == "modpack")
+        ]
+        if not candidates:
+            return
+        task_id, task = candidates[0]
+        self._cancel_modrinth_task_by_id(task_id)
 
     def remove_modrinth_project(self, project: dict):
         profile = self._catalog_target_profile()
@@ -3099,10 +3988,13 @@ class LauncherWindow(QMainWindow):
             log.exception("Не удалось удалить проект Modrinth")
             self._notify("Не удалось удалить проект", str(exc), "error", 7000)
 
-    def _start_downloaded_modpack_import(self, archive_path: str, profile_id: str = ""):
+    def _start_downloaded_modpack_import(self, archive_path: str, profile_id: str = "",
+                                         download_task_id: str = ""):
         archive = Path(archive_path)
         if not archive.is_file():
             self._mod_operation_failed("Не удалось найти скачанный файл сборки Modrinth.")
+            if download_task_id:
+                self._update_download_task(download_task_id, state="failed", details="Не найден архив сборки.")
             return
         try:
             metadata = inspect_modpack(archive)
@@ -3125,21 +4017,52 @@ class LauncherWindow(QMainWindow):
                 self._set_active_profile(profile_id)
             self._pending_modpack_download = str(archive)
             self._modpack_profile_id = profile_id
-            worker = ModpackImportWorker(
-                str(archive), str(self.game_root), str(self.profile_manager.instance_dir(profile_id)),
-                str(self.settings.value("game/java_path", "")),
-                self.settings.value("game/auto_java", True, type=bool), "", self,
-            )
-            worker.progress.connect(self._modpack_progress)
-            worker.completed.connect(self._modpack_imported)
-            worker.failed.connect(self._modpack_import_failed)
-            self.modpack_worker = worker
-            self._retain_worker(worker)
-            self.mod_status_label.setText("Устанавливаем готовую сборку и её Minecraft/загрузчик…")
-            worker.start()
+            self._launch_modpack_import_worker(str(archive), profile_id, download_task_id=download_task_id)
         except Exception as exc:
             archive.unlink(missing_ok=True)
+            if download_task_id:
+                self._update_download_task(download_task_id, state="failed", details=str(exc)[:260])
             self._mod_operation_failed(f"Не удалось подготовить сборку: {exc}")
+
+    def _launch_modpack_import_worker(self, archive_path: str, profile_id: str,
+                                      download_task_id: str = ""):
+        profile_dir = self.profile_manager.instance_dir(profile_id)
+        control = DownloadTaskControl()
+        if not download_task_id:
+            download_task_id = "modpack-import-" + uuid.uuid4().hex
+            profile = self.profile_manager.get(profile_id) or {}
+            self._register_download_task(
+                download_task_id, f"Импорт сборки: {profile.get('name', Path(archive_path).stem)}",
+                "Minecraft, загрузчик, моды и файлы конфигурации",
+                control=control, state="downloading",
+            )
+        else:
+            task = self._download_tasks.get(download_task_id, {})
+            task.update({"control": control, "can_pause": True, "state": "downloading",
+                         "cancel_callback": None,
+                         "details": "Устанавливаем Minecraft, загрузчик и содержимое сборки."})
+            self._update_download_task(download_task_id, worker=None)
+        self._modpack_task_id = download_task_id
+        worker = ModpackImportWorker(
+            archive_path, str(self.game_root), str(profile_dir),
+            str(self.settings.value("game/java_path", "")),
+            self.settings.value("game/auto_java", True, type=bool), "", self,
+            download_control=control, rate_limiter=self.download_rate_limiter,
+        )
+        self._download_tasks[download_task_id]["worker"] = worker
+        self._download_task_workers[download_task_id] = worker
+        worker.progress.connect(self._modpack_progress)
+        worker.completed.connect(self._modpack_imported)
+        worker.failed.connect(self._modpack_import_failed)
+        worker.cancelled.connect(self._modpack_import_cancelled)
+        self.modpack_worker = worker
+        self._retain_worker(worker)
+        self.modpack_progress.setValue(0)
+        self.modpack_progress.show()
+        self.cancel_modpack_button.show()
+        self.mod_status_label.setText("Устанавливаем сборку и её Minecraft/загрузчик…")
+        self._schedule_activity_refresh()
+        worker.start()
 
     def import_local_version(self):
         if not self._has_active_profile():
@@ -3222,18 +4145,7 @@ class LauncherWindow(QMainWindow):
             )
             self._set_active_profile(profile["id"])
             self._modpack_profile_id = profile["id"]
-            worker = ModpackImportWorker(
-                archive_path, str(self.game_root), str(self._instance_dir()),
-                str(self.settings.value("game/java_path", "")),
-                self.settings.value("game/auto_java", True, type=bool), "", self,
-            )
-            worker.progress.connect(self._modpack_progress)
-            worker.completed.connect(self._modpack_imported)
-            worker.failed.connect(self._modpack_import_failed)
-            self.modpack_worker = worker
-            self._retain_worker(worker)
-            self.mod_status_label.setText("Подготовка импорта сборки Modrinth…")
-            worker.start()
+            self._launch_modpack_import_worker(str(archive_path), profile["id"])
         except Exception as exc:
             self._notify("Не удалось прочитать сборку", str(exc), "error", 7000)
 
@@ -3295,19 +4207,56 @@ class LauncherWindow(QMainWindow):
                 shutil.rmtree(staging_parent, ignore_errors=True)
 
     def _modpack_progress(self, value: int, message: str):
+        if value >= 0:
+            self.modpack_progress.setValue(max(0, min(100, int(value))))
+        if getattr(self, "_modpack_task_id", ""):
+            self._parse_download_progress(self._modpack_task_id, str(message), int(value))
         self.mod_status_label.setText(message)
         self._set_status(message)
 
+    def cancel_modpack_import(self):
+        worker = self.modpack_worker
+        if worker is None or not worker.isRunning():
+            return
+        worker.cancel()
+        if self._modpack_task_id:
+            self._update_download_task(self._modpack_task_id, state="cancelling", details="Останавливаем импорт сборки…")
+        self.cancel_modpack_button.setEnabled(False)
+        self.cancel_modpack_button.setText("Остановка…")
+        self.mod_status_label.setText("Останавливаем импорт сборки после текущей сетевой операции…")
+
+    def _reset_modpack_controls(self):
+        self.cancel_modpack_button.hide()
+        self.cancel_modpack_button.setEnabled(True)
+        self.cancel_modpack_button.setText("Остановить импорт")
+        self.modpack_progress.hide()
+
     def _modpack_imported(self, metadata: dict):
+        task_id = self._modpack_task_id
         profile_id = self._modpack_profile_id or self.active_profile_id
-        if self.profile_manager.get(profile_id):
-            profile = self.profile_manager.get(profile_id)
-            if (profile and str(profile.get("minecraft_version")) == str(metadata["minecraft_version"])
-                    and str(profile.get("loader")) == str(metadata["loader"])):
-                self.profile_manager.update(profile_id, installed_version_id=metadata["installed_version_id"],
-                                            storage_root="shared", kind="modpack")
-            else:
-                raise ProfileError("Версия Minecraft или загрузчик не совпадают с манифестом сборки.")
+        profile = self.profile_manager.get(profile_id) if profile_id else None
+        if not profile:
+            self._modpack_import_failed("Профиль сборки не найден. Импорт не был отмечен как завершённый.")
+            return
+        if (str(profile.get("minecraft_version")) != str(metadata.get("minecraft_version"))
+                or str(profile.get("loader")) != str(metadata.get("loader"))):
+            self._modpack_import_failed(
+                "Версия Minecraft или загрузчик не совпадают с манифестом сборки. "
+                "Проверь профиль и повтори импорт."
+            )
+            return
+        try:
+            self.profile_manager.update(profile_id, installed_version_id=metadata["installed_version_id"],
+                                        storage_root="shared", kind="modpack")
+        except Exception as exc:
+            log.exception("Не удалось сохранить метаданные установленной сборки")
+            self._modpack_import_failed(f"Сборка скачана, но не удалось сохранить профиль: {exc}")
+            return
+        if task_id:
+            self._update_download_task(task_id, state="completed", progress=100,
+                                       details="Сборка установлена и готова к запуску.", speed_label="")
+        self._modpack_task_id = ""
+        self._reset_modpack_controls()
         if self._pending_modpack_download:
             Path(self._pending_modpack_download).unlink(missing_ok=True)
             self._pending_modpack_download = ""
@@ -3322,11 +4271,29 @@ class LauncherWindow(QMainWindow):
                      "success", 6500)
 
     def _modpack_import_failed(self, message: str):
+        if self._modpack_task_id:
+            self._update_download_task(self._modpack_task_id, state="failed", details=str(message)[:260], speed_label="")
+        self._modpack_task_id = ""
+        self._reset_modpack_controls()
         if self._pending_modpack_download:
             Path(self._pending_modpack_download).unlink(missing_ok=True)
             self._pending_modpack_download = ""
         self.mod_status_label.setText(message)
         self._notify("Импорт сборки не завершён", message, "error", 8500)
+
+    def _modpack_import_cancelled(self):
+        if self._modpack_task_id:
+            self._update_download_task(self._modpack_task_id, state="cancelled", details="Импорт сборки остановлен.", speed_label="")
+        self._modpack_task_id = ""
+        self._reset_modpack_controls()
+        if self._pending_modpack_download:
+            Path(self._pending_modpack_download).unlink(missing_ok=True)
+            self._pending_modpack_download = ""
+        self.mod_status_label.setText(
+            "Импорт остановлен. Уже существующие файлы сборки не удалялись автоматически."
+        )
+        self._set_status("импорт сборки остановлен")
+        self._notify("Импорт остановлен", "Сборка не отмечена как полностью установленная.", "info")
 
     def rename_profile(self):
         if not self._has_active_profile():
@@ -3470,8 +4437,16 @@ class LauncherWindow(QMainWindow):
 
     def _start_update_download(self, data: dict):
         self._update_sha256 = str(data.get("sha256", "")).lower().strip()
+        update_control = DownloadTaskControl()
+        self._update_task_id = "launcher-update-" + uuid.uuid4().hex
         self.download_worker = AssetDownloadWorker(
             data["download_url"], data["sha256"], data["asset_name"], self,
+            download_control=update_control, rate_limiter=self.download_rate_limiter,
+        )
+        self._register_download_task(
+            self._update_task_id, f"Обновление FiercyLauncher {data.get('latest_version', '')}",
+            str(data.get("asset_name", "Архив обновления")), control=update_control,
+            worker=self.download_worker, state="downloading",
         )
         self.download_worker.progress.connect(self._update_download_progress)
         self.download_worker.completed.connect(self._update_downloaded)
@@ -3488,16 +4463,31 @@ class LauncherWindow(QMainWindow):
         if percent >= 0:
             self.update_progress.setValue(percent)
         speed_mbps = speed / 1048576
-        self.update_status.setText(f"{status} · {speed_mbps:.2f} МБ/с")
+        if percent >= 0 and total > 0:
+            downloaded = total * percent / 100
+            details = f"{percent}% · {downloaded / 1048576:.1f}/{total / 1048576:.1f} МБ"
+        else:
+            details = "Размер пока неизвестен"
+        self.update_status.setText(f"{status} · {details} · {speed_mbps:.2f} МБ/с")
+        if getattr(self, "_update_task_id", ""):
+            current_state = self._download_tasks.get(self._update_task_id, {}).get("state", "downloading")
+            next_state = current_state if current_state in {"paused", "cancelling"} else "downloading"
+            self._update_download_task(self._update_task_id, state=next_state,
+                                       progress=percent, details=f"{details} · {speed_mbps:.2f} МБ/с",
+                                       speed_label=f"{speed_mbps:.2f} МБ/с")
         self._set_status("загрузка обновления")
 
     def cancel_update_download(self):
         if self.download_worker and self.download_worker.isRunning():
             self.download_worker.cancel()
+            if getattr(self, "_update_task_id", ""):
+                self._update_download_task(self._update_task_id, state="cancelling", details="Останавливаем загрузку…")
             self.cancel_download_button.setEnabled(False)
             self.update_status.setText("Отменяем загрузку…")
 
     def _update_cancelled(self):
+        if getattr(self, "_update_task_id", ""):
+            self._update_download_task(self._update_task_id, state="cancelled", details="Загрузка обновления отменена.", speed_label="")
         self.cancel_download_button.hide()
         self.cancel_download_button.setEnabled(True)
         self.check_updates_button.setEnabled(True)
@@ -3505,6 +4495,9 @@ class LauncherWindow(QMainWindow):
         self._set_status("обновление отменено")
 
     def _update_downloaded(self, archive_path: str):
+        if getattr(self, "_update_task_id", ""):
+            self._update_download_task(self._update_task_id, state="completed", progress=100,
+                                       details="Архив загружен и SHA-256 проверен.", speed_label="")
         self._update_archive = archive_path
         self.cancel_download_button.hide()
         self.update_progress.setValue(100)
@@ -3512,6 +4505,8 @@ class LauncherWindow(QMainWindow):
         QTimer.singleShot(800, self._apply_update)
 
     def _update_download_failed(self, message: str):
+        if getattr(self, "_update_task_id", ""):
+            self._update_download_task(self._update_task_id, state="failed", details=str(message)[:260], speed_label="")
         self.cancel_download_button.hide()
         self.cancel_download_button.setEnabled(True)
         self.check_updates_button.setEnabled(True)
@@ -3718,16 +4713,30 @@ class LauncherWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, "sidebar"):
-            width = event.size().width()
-            sidebar_width = 184 if width < 1080 else (208 if width < 1360 else 232)
-            self.sidebar.setFixedWidth(sidebar_width)
+        width = event.size().width()
+        if hasattr(self, "appearance_manager"):
+            # Перестраиваем QSS только при переходе через breakpoint, чтобы
+            # не гонять полный рендер стилей на каждом пикселе resize.
+            breakpoint = 0 if width >= 1240 else (1 if width >= 1020 else (2 if width >= 850 else 3))
+            if getattr(self, "_responsive_breakpoint", None) != breakpoint:
+                self._responsive_breakpoint = breakpoint
+                self.apply_theme()
+        if hasattr(self, "wallpaper_label"):
+            self.wallpaper_label.update_parent_geometry()
+        details_page = getattr(self, "modrinth_details_page", None)
+        if details_page is not None:
+            details_page.update_preview_geometry()
         if hasattr(self, "promo_banner"):
             self._resize_promo_banner()
+        if hasattr(self, "activity_drawer") and self.activity_drawer.isVisible():
+            self._position_activity_drawer()
         if hasattr(self, "toast") and self.toast.isVisible():
             self.toast.reposition()
 
     def closeEvent(self, event):
+        if self._hotkey_filter_installed and QApplication.instance() is not None:
+            QApplication.instance().removeEventFilter(self)
+            self._hotkey_filter_installed = False
         if self._allow_update_close:
             self.discord_presence.shutdown()
             event.accept()

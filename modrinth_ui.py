@@ -1,14 +1,42 @@
 """Небольшой карточный каталог Modrinth и окно подробностей проекта."""
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QByteArray, QBuffer, QIODevice, QSize
 from PyQt5.QtWidgets import QScroller
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QImageReader
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QFrame, QTextBrowser, QTextEdit, QScrollArea, QWidget, QDialogButtonBox, QSizePolicy,
 )
 from ui_controls import WheelSafeComboBox, SmoothScrollArea
+
+
+def _safe_pixmap(payload: bytes, max_pixels: int = 24_000_000, max_edge: int = 4096) -> QPixmap:
+    """Decode remote image data only after checking its declared dimensions."""
+    if not payload or len(payload) > 8 * 1024 * 1024:
+        return QPixmap()
+    try:
+        buffer = QBuffer()
+        buffer.setData(QByteArray(payload))
+        if not buffer.open(QIODevice.ReadOnly):
+            return QPixmap()
+        reader = QImageReader(buffer)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid():
+            width, height = size.width(), size.height()
+            if width <= 0 or height <= 0 or width * height > max_pixels:
+                buffer.close()
+                return QPixmap()
+            # A preview should not allocate a giant full-resolution texture.
+            scale = min(1.0, max_edge / max(width, height))
+            if scale < 1.0:
+                reader.setScaledSize(QSize(max(1, int(width * scale)), max(1, int(height * scale))))
+        image = reader.read()
+        buffer.close()
+        return QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+    except Exception:
+        return QPixmap()
 
 
 def _number(value) -> str:
@@ -27,12 +55,14 @@ class ModrinthProjectCard(QFrame):
     detailsRequested = pyqtSignal(dict)
     installRequested = pyqtSignal(dict)
     removeRequested = pyqtSignal(dict)
+    cancelRequested = pyqtSignal(dict)
 
     def __init__(self, project: dict, parent=None):
         super().__init__(parent)
         self.project = dict(project)
         self._requires_loader = bool(project.get("requires_loader"))
         self._state = "idle"
+        self._left_press_inside = False
         self.setObjectName("ModrinthProjectCard")
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(205)
@@ -114,6 +144,15 @@ class ModrinthProjectCard(QFrame):
         self.remove_button.clicked.connect(lambda: self.removeRequested.emit(dict(self.project)))
         self.remove_button.hide()
         footer.addWidget(self.remove_button)
+        self.cancel_button = QPushButton("Отменить")
+        self.cancel_button.setObjectName("DangerButton")
+        self.cancel_button.setCursor(Qt.PointingHandCursor)
+        self.cancel_button.setMinimumWidth(76)
+        self.cancel_button.setMaximumHeight(34)
+        self.cancel_button.setFocusPolicy(Qt.NoFocus)
+        self.cancel_button.clicked.connect(lambda: self.cancelRequested.emit(dict(self.project)))
+        self.cancel_button.hide()
+        footer.addWidget(self.cancel_button)
         root.addLayout(footer)
         self.set_install_state("idle")
 
@@ -139,6 +178,10 @@ class ModrinthProjectCard(QFrame):
         self.install_button.style().unpolish(self.install_button)
         self.install_button.style().polish(self.install_button)
         self.remove_button.setVisible(state == "installed")
+        self.cancel_button.setVisible(state in {"queued", "downloading", "cancelling"})
+        self.cancel_button.setText("Остановка…" if state == "cancelling" else
+                                   ("Убрать" if state == "queued" else "Отменить"))
+        self.cancel_button.setEnabled(state != "cancelling")
         self.install_button.setEnabled(state in {"idle", "failed"} and not self._requires_loader)
         self.install_button.setToolTip(message or ("Для мода сначала выбери Fabric, Forge, NeoForge или Quilt." if self._requires_loader else ""))
         self.state_label.setText(message if state in {"queued", "downloading", "failed"} else ("Уже в сборке" if state == "installed" else ""))
@@ -148,13 +191,22 @@ class ModrinthProjectCard(QFrame):
         self.state_label.style().polish(self.state_label)
 
     def set_icon_bytes(self, payload: bytes):
-        pixmap = QPixmap()
-        if payload and pixmap.loadFromData(payload):
+        pixmap = _safe_pixmap(payload, max_pixels=8_000_000, max_edge=512)
+        if not pixmap.isNull():
             self.icon.setPixmap(pixmap.scaled(48, 48, Qt.KeepAspectRatioByExpanding, Qt.FastTransformation))
             self.icon.setText("")
 
+    def mousePressEvent(self, event):
+        self._left_press_inside = event.button() == Qt.LeftButton and self.rect().contains(event.pos())
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        should_open = (
+            event.button() == Qt.LeftButton and self._left_press_inside
+            and self.rect().contains(event.pos())
+        )
+        self._left_press_inside = False
+        if should_open:
             self.detailsRequested.emit(dict(self.project))
             event.accept()
             return
@@ -167,6 +219,7 @@ class ModrinthCatalogWidget(QWidget):
     projectDetailsRequested = pyqtSignal(dict)
     installRequested = pyqtSignal(dict)
     removeRequested = pyqtSignal(dict)
+    cancelRequested = pyqtSignal(dict)
     loadMoreRequested = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -285,6 +338,7 @@ class ModrinthCatalogWidget(QWidget):
             card.detailsRequested.connect(self.projectDetailsRequested)
             card.installRequested.connect(self.installRequested)
             card.removeRequested.connect(self.removeRequested)
+            card.cancelRequested.connect(self.cancelRequested)
             self.cards.append(card)
             added.append(card)
         self._total_hits = max(self._total_hits, int(total_hits or 0))
@@ -345,6 +399,7 @@ class ModrinthCatalogWidget(QWidget):
 
 class ClickableGalleryImage(QLabel):
     clicked = pyqtSignal(bytes)
+    imageReady = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -356,11 +411,17 @@ class ClickableGalleryImage(QLabel):
         self.setObjectName("ModrinthGalleryImage")
 
     def set_image_bytes(self, payload: bytes):
-        pixmap = QPixmap()
-        if payload and pixmap.loadFromData(payload):
+        pixmap = _safe_pixmap(payload, max_pixels=24_000_000, max_edge=2048)
+        if not pixmap.isNull():
             self.payload = bytes(payload)
+            self._failed = False
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
             self.setText("")
+            self.imageReady.emit()
+
+    def set_image_failed(self, _message: str = ""):
+        self._failed = True
+        self.setText("Изображение недоступно")
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.payload:
@@ -383,8 +444,8 @@ class ModrinthImagePreviewDialog(QDialog):
         scroll.setFrameShape(QFrame.NoFrame)
         image = QLabel()
         image.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap()
-        if payload and pixmap.loadFromData(payload):
+        pixmap = _safe_pixmap(payload, max_pixels=24_000_000, max_edge=4096)
+        if not pixmap.isNull():
             image.setPixmap(pixmap)
             image.setMinimumSize(pixmap.size())
         else:
@@ -396,26 +457,30 @@ class ModrinthImagePreviewDialog(QDialog):
         root.addWidget(close, 0, Qt.AlignRight)
 
 
-class ModrinthProjectDetailsDialog(QDialog):
-    """Аккуратная страница проекта, галерея с полноразмерным просмотром и выбор версии."""
+class ModrinthProjectDetailsDialog(QWidget):
+    """Встроенная страница проекта Modrinth с галереей и полноэкранным просмотром."""
+
+    backRequested = pyqtSignal()
+    installRequested = pyqtSignal(str)
 
     def __init__(self, project: dict, versions: list[dict], parent=None):
         super().__init__(parent)
         self.project = dict(project)
         self.versions = list(versions or [])
-        self.setWindowTitle(str(project.get("title", "Проект Modrinth")))
         self.setObjectName("ModrinthDetailsDialog")
-        self.setModal(True)
-        self.resize(900, 760)
-        self.setMinimumSize(720, 600)
         self._image_workers = []
         self._gallery_queue = []
         self._gallery_active = 0
         self._gallery_limit = 3
+        self._gallery_labels = []
+        self._preview_overlay = None
+        self._preview_image = None
+        self._preview_index = 0
+        self._preview_labels = []
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(2, 2, 2, 2)
+        root.setSpacing(8)
 
         scroll = SmoothScrollArea()
         scroll.setObjectName("ModrinthDetailsScroll")
@@ -434,23 +499,23 @@ class ModrinthProjectDetailsDialog(QDialog):
         header.setSpacing(14)
         self.icon = QLabel("F")
         self.icon.setObjectName("ModrinthProjectIcon")
-        self.icon.setFixedSize(80, 80)
+        self.icon.setFixedSize(88, 88)
         self.icon.setAlignment(Qt.AlignCenter)
         header.addWidget(self.icon, 0, Qt.AlignTop)
         identity = QVBoxLayout()
         identity.setSpacing(5)
-        title = QLabel(str(project.get("title", "Без названия")))
+        title = QLabel(str(project.get("title", "Без названия"))[:160])
         title.setObjectName("PageHeading")
         title.setWordWrap(True)
         identity.addWidget(title)
-        author = str(project.get("author", "Неизвестный автор"))
+        author = str(project.get("author", "Неизвестный автор"))[:120]
         stats = (f"Автор: {author}   ·   Загрузки: {_number(project.get('downloads'))}"
                  f"   ·   В избранном: {_number(project.get('follows'))}")
         self.stats_label = QLabel(stats)
         self.stats_label.setObjectName("Muted")
         self.stats_label.setWordWrap(True)
         identity.addWidget(self.stats_label)
-        short = QLabel(str(project.get("description", "Описание пока не добавлено.")))
+        short = QLabel(str(project.get("description", "Описание пока не добавлено."))[:1000])
         short.setObjectName("Muted")
         short.setWordWrap(True)
         identity.addWidget(short)
@@ -458,8 +523,10 @@ class ModrinthProjectDetailsDialog(QDialog):
         content_layout.addWidget(header_card)
 
         gallery = project.get("gallery", []) or []
+        if not isinstance(gallery, list):
+            gallery = []
         if gallery:
-            gallery_title = QLabel("Галерея проекта")
+            gallery_title = QLabel("Галерея проекта  ·  нажми на изображение, чтобы развернуть")
             gallery_title.setObjectName("SectionTitle")
             content_layout.addWidget(gallery_title)
             self.gallery_scroll = SmoothScrollArea()
@@ -468,7 +535,6 @@ class ModrinthProjectDetailsDialog(QDialog):
             self.gallery_scroll.setFrameShape(QFrame.NoFrame)
             self.gallery_scroll.setFixedHeight(174)
             self.gallery_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.gallery_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             self.gallery_widget = QWidget()
             self.gallery_layout = QHBoxLayout(self.gallery_widget)
             self.gallery_layout.setContentsMargins(2, 2, 2, 4)
@@ -486,12 +552,16 @@ class ModrinthProjectDetailsDialog(QDialog):
         self.body.setOpenLinks(True)
         self.body.setReadOnly(True)
         self.body.setFrameShape(QFrame.NoFrame)
-        self.body.setMinimumHeight(320)
+        self.body.setMinimumHeight(280)
         self.body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.body.setLineWrapMode(QTextEdit.WidgetWidth)
-        self.body.setMarkdown(self._clean_markdown(
+        markdown = self._clean_markdown(
             str(project.get("body", "") or project.get("description", "Описание отсутствует."))
-        ))
+        )
+        try:
+            self.body.setMarkdown(markdown)
+        except Exception:
+            self.body.setPlainText(self._markdown_fallback_text(markdown))
         content_layout.addWidget(self.body)
         content_layout.addStretch(1)
         scroll.setWidget(content)
@@ -499,12 +569,22 @@ class ModrinthProjectDetailsDialog(QDialog):
 
         footer = QFrame()
         footer.setObjectName("ModrinthDetailsFooter")
-        footer_row = QHBoxLayout(footer)
-        footer_row.setContentsMargins(10, 8, 10, 8)
+        footer_outer = QVBoxLayout(footer)
+        footer_outer.setContentsMargins(10, 8, 10, 8)
+        footer_outer.setSpacing(7)
+        footer_top = QHBoxLayout()
+        back_button = QPushButton("←  Назад к каталогу")
+        back_button.setObjectName("SecondaryButton")
+        back_button.setMinimumHeight(36)
+        back_button.clicked.connect(self.backRequested.emit)
+        footer_top.addWidget(back_button)
+        footer_top.addStretch(1)
+        footer_outer.addLayout(footer_top)
+        footer_row = QHBoxLayout()
         footer_row.addWidget(QLabel("Совместимая версия"))
         self.version_combo = WheelSafeComboBox()
-        self.version_combo.setMinimumHeight(42)
-        self.version_combo.setMinimumWidth(280)
+        self.version_combo.setMinimumHeight(40)
+        self.version_combo.setMinimumWidth(140)
         for version in self.versions:
             version_id = str(version.get("id", ""))
             if not version_id:
@@ -526,39 +606,36 @@ class ModrinthProjectDetailsDialog(QDialog):
         self.install_button.setObjectName("PrimaryButton")
         self.install_button.setMinimumHeight(42)
         self.install_button.setEnabled(self.version_combo.isEnabled())
-        self.install_button.clicked.connect(self.accept)
+        self.install_button.clicked.connect(lambda: self.installRequested.emit(self.selected_version_id()))
         footer_row.addWidget(self.install_button)
-        close_button = QPushButton("Закрыть")
-        close_button.setObjectName("SecondaryButton")
-        close_button.setMinimumHeight(42)
-        close_button.clicked.connect(self.reject)
-        footer_row.addWidget(close_button)
+        footer_outer.addLayout(footer_row)
         root.addWidget(footer)
 
     @staticmethod
     def _clean_markdown(markdown: str) -> str:
-        """Remove embedded remote/HTML images that Qt QTextDocument displays as broken glyphs.
-
-        Gallery images are displayed in the dedicated gallery above where they can
-        be opened at native resolution. Keep link labels and standard Markdown text.
-        """
+        """Sanitize untrusted Modrinth Markdown before rendering it in QTextBrowser."""
         import re
-        text = str(markdown or "")
+        text = str(markdown or "")[:100000]
         text = re.sub(r"(?is)<(script|style|svg|picture)\b.*?</\1\s*>", "", text)
         text = re.sub(r"(?is)<img\b[^>]*?/?>", "", text)
         text = re.sub(r"(?is)<!--.*?-->", "", text)
-        # QTextBrowser's Markdown renderer cannot fetch remote images and some
-        # Modrinth descriptions contain nested HTML/image blocks. Remove those
-        # blocks here; gallery images are shown separately and are clickable.
         text = re.sub(r"(?is)<(div|section|figure|table)\b[^>]*>.*?</\1\s*>", "", text)
         text = re.sub(r"!\[([^]]*)\]\(.*?\)", r"\1", text)
-        text = re.sub(r"(?m)^\s*<[^>]+>\s*$", "", text)
+        text = re.sub(r"(?is)<[^>]{1,2000}>", " ", text)
         text = re.sub(r"(?m)^\s*[\u25a0\u25a1\ufffd]+\s*$", "", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = text.strip()
-        if len(text) > 90000:
-            text = text[:90000].rstrip() + "\n\n*Описание обрезано в интерфейсе, чтобы не перегружать окно.*"
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if len(text) > 40000:
+            text = text[:40000].rstrip() + "\n\n*Описание обрезано в интерфейсе, чтобы не перегружать окно.*"
         return text or "Описание проекта пока не добавлено."
+
+    @staticmethod
+    def _markdown_fallback_text(markdown: str) -> str:
+        import re
+        text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", str(markdown or "")[:40000])
+        text = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", text)
+        text = re.sub(r"(?m)^\s*[-*+]\s+", "• ", text)
+        text = re.sub(r"[*_`~]", "", text)
+        return text[:40000] or "Описание проекта не удалось отобразить."
 
     def _build_gallery(self, gallery):
         urls = []
@@ -570,52 +647,172 @@ class ModrinthProjectDetailsDialog(QDialog):
         for url in urls[:12]:
             label = ClickableGalleryImage(self.gallery_widget)
             label.clicked.connect(self._show_image_preview)
+            label.imageReady.connect(self._gallery_preview_maybe_refresh)
             self.gallery_layout.addWidget(label)
+            self._gallery_labels.append(label)
             self._gallery_queue.append((url, label))
         self.gallery_layout.addStretch(1)
         self._start_next_gallery_images()
 
     def _start_next_gallery_images(self):
+        # Import locally: modrinth_ui is also used by the launcher, so the worker
+        # is resolved only when the gallery starts, avoiding a circular import.
+        try:
+            from mod_service import ModrinthImageWorker
+        except Exception as exc:
+            for _url, label in self._gallery_queue:
+                label.setText("Не удалось загрузить изображения")
+            self._gallery_queue.clear()
+            return
+        owner = self.window()
         while self._gallery_queue and self._gallery_active < self._gallery_limit:
             url, label = self._gallery_queue.pop(0)
-            owner = self.parent() if self.parent() is not None else self
-            worker = ModrinthImageWorker(url, owner)
+            worker_parent = owner if owner is not self else self
+            worker = ModrinthImageWorker(url, worker_parent)
             worker.loaded.connect(label.set_image_bytes)
-            worker.failed.connect(lambda _message, target=label: target.setText("Изображение недоступно"))
-            worker.finished.connect(lambda current=worker: self._forget_image_worker(current))
-            if owner is not self and hasattr(owner, "mod_image_workers"):
+            worker.failed.connect(label.set_image_failed)
+            import weakref
+            page_ref = weakref.ref(self)
+            def cleanup(current=worker, page_ref=page_ref, main_window=owner):
+                if hasattr(main_window, "mod_image_workers"):
+                    try:
+                        if current in main_window.mod_image_workers:
+                            main_window.mod_image_workers.remove(current)
+                    except RuntimeError:
+                        pass
+                current.deleteLater()
+                page = page_ref()
+                if page is not None:
+                    try:
+                        if current in page._image_workers:
+                            page._image_workers.remove(current)
+                        page._gallery_active = max(0, page._gallery_active - 1)
+                        if page.isVisible():
+                            page._start_next_gallery_images()
+                    except RuntimeError:
+                        pass
+            worker.finished.connect(cleanup)
+            if hasattr(owner, "mod_image_workers"):
                 owner.mod_image_workers.append(worker)
             self._image_workers.append(worker)
             self._gallery_active += 1
             worker.start()
 
     def _show_image_preview(self, payload: bytes):
-        dialog = ModrinthImagePreviewDialog(payload, self)
-        dialog.setStyleSheet(self.styleSheet())
-        dialog.exec_()
+        self._preview_labels = list(self._gallery_labels)
+        self._preview_index = next(
+            (index for index, label in enumerate(self._preview_labels) if label.payload == payload), 0
+        )
+        if not self._preview_labels:
+            return
+        if self._preview_overlay is None:
+            owner = self.window()
+            overlay_parent = getattr(owner, "window_root", self)
+            overlay = QFrame(overlay_parent)
+            overlay.setObjectName("ModrinthImageOverlay")
+            overlay.setStyleSheet("QFrame#ModrinthImageOverlay { background: rgba(4, 8, 16, 248); border-radius: 14px; }")
+            layout = QVBoxLayout(overlay)
+            layout.setContentsMargins(18, 14, 18, 18)
+            layout.setSpacing(12)
+            top = QHBoxLayout()
+            title = QLabel("Галерея проекта")
+            title.setObjectName("PageHeading")
+            top.addWidget(title, 1)
+            close = QPushButton("Закрыть  ×")
+            close.setObjectName("SecondaryButton")
+            close.clicked.connect(self.close_preview)
+            top.addWidget(close)
+            layout.addLayout(top)
+            self._preview_image = QLabel("Загрузка изображения…")
+            self._preview_image.setAlignment(Qt.AlignCenter)
+            self._preview_image.setMinimumSize(240, 180)
+            self._preview_image.setStyleSheet("background: #050912; border-radius: 10px;")
+            layout.addWidget(self._preview_image, 1)
+            bottom = QHBoxLayout()
+            self._preview_counter = QLabel("")
+            self._preview_counter.setObjectName("Muted")
+            bottom.addWidget(self._preview_counter, 1)
+            previous = QPushButton("‹  Предыдущее")
+            previous.setObjectName("SecondaryButton")
+            previous.clicked.connect(lambda: self._step_preview(-1))
+            bottom.addWidget(previous)
+            following = QPushButton("Следующее  ›")
+            following.setObjectName("SecondaryButton")
+            following.clicked.connect(lambda: self._step_preview(1))
+            bottom.addWidget(following)
+            layout.addLayout(bottom)
+            self._preview_prev = previous
+            self._preview_next = following
+            self._preview_overlay = overlay
+        overlay_parent = self._preview_overlay.parentWidget()
+        self._preview_overlay.setGeometry(overlay_parent.rect() if overlay_parent is not None else self.rect())
+        self._preview_overlay.show()
+        self._preview_overlay.raise_()
+        self._update_preview_image()
 
-    def _forget_image_worker(self, worker):
-        if worker in self._image_workers:
-            self._image_workers.remove(worker)
-        owner = self.parent() if self.parent() is not None else None
-        if owner is not None and hasattr(owner, "mod_image_workers"):
-            try:
-                if worker in owner.mod_image_workers:
-                    owner.mod_image_workers.remove(worker)
-            except RuntimeError:
-                pass
-        self._gallery_active = max(0, self._gallery_active - 1)
-        worker.deleteLater()
-        # If the dialog was accepted/rejected, no more image widgets need updating.
-        if self.isVisible():
-            self._start_next_gallery_images()
+    def _step_preview(self, direction: int):
+        if not self._preview_labels:
+            return
+        self._preview_index = (self._preview_index + direction) % len(self._preview_labels)
+        self._update_preview_image()
+
+    def _gallery_preview_maybe_refresh(self):
+        if self._preview_overlay is not None and self._preview_overlay.isVisible():
+            self._update_preview_image()
+
+    def _update_preview_image(self):
+        if not self._preview_overlay or not self._preview_image or not self._preview_labels:
+            return
+        label = self._preview_labels[self._preview_index]
+        if not label.payload:
+            self._preview_image.setPixmap(QPixmap())
+            self._preview_image.setText(
+                "Не удалось загрузить изображение" if getattr(label, "_failed", False)
+                else "Изображение загружается…"
+            )
+        else:
+            pixmap = _safe_pixmap(label.payload, max_pixels=24_000_000, max_edge=4096)
+            if pixmap.isNull():
+                self._preview_image.setPixmap(QPixmap())
+                self._preview_image.setText("Не удалось открыть изображение")
+            else:
+                self._preview_image.setPixmap(pixmap.scaled(
+                    self._preview_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                ))
+        self._preview_counter.setText(f"{self._preview_index + 1} / {len(self._preview_labels)}")
+        self._preview_prev.setEnabled(len(self._preview_labels) > 1)
+        self._preview_next.setEnabled(len(self._preview_labels) > 1)
+
+    def close_preview(self) -> bool:
+        if self._preview_overlay is not None and self._preview_overlay.isVisible():
+            self._preview_overlay.hide()
+            return True
+        return False
+
+    def update_preview_geometry(self):
+        if self._preview_overlay is not None and self._preview_overlay.isVisible():
+            overlay_parent = self._preview_overlay.parentWidget()
+            self._preview_overlay.setGeometry(overlay_parent.rect() if overlay_parent is not None else self.rect())
+            self._update_preview_image()
+
+    def dispose_preview(self):
+        if self._preview_overlay is not None:
+            self._preview_overlay.hide()
+            self._preview_overlay.setParent(None)
+            self._preview_overlay.deleteLater()
+            self._preview_overlay = None
+            self._preview_image = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_preview_geometry()
 
     def selected_version_id(self) -> str:
         return str(self.version_combo.currentData() or "")
 
     def set_project_icon(self, payload: bytes):
-        pixmap = QPixmap()
-        if payload and pixmap.loadFromData(payload):
-            self.icon.setPixmap(pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        pixmap = _safe_pixmap(payload, max_pixels=8_000_000, max_edge=512)
+        if not pixmap.isNull():
+            self.icon.setPixmap(pixmap.scaled(88, 88, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             self.icon.setText("")
 

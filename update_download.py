@@ -98,7 +98,8 @@ def _probe_ranges(url: str, timeout: tuple[int, int]) -> tuple[bool, int]:
 
 def _download_single(url: str, temporary: Path, expected_size: int,
                      callback: ProgressCallback | None, cancel_event: threading.Event | None,
-                     started: float, timeout: tuple[int, int]) -> int:
+                     started: float, timeout: tuple[int, int], download_control=None,
+                     rate_limiter=None) -> int:
     last_error: Exception | None = None
     for attempt in range(1, 4):
         temporary.unlink(missing_ok=True)
@@ -116,6 +117,8 @@ def _download_single(url: str, temporary: Path, expected_size: int,
                             raise DownloadCancelled()
                         if not chunk:
                             continue
+                        if download_control is not None:
+                            download_control.checkpoint(len(chunk), rate_limiter)
                         output.write(chunk)
                         done += len(chunk)
                         _notify(callback, done, total, started,
@@ -143,6 +146,8 @@ def download_verified_asset(
     progress: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
     max_workers: int = 6,
+    download_control=None,
+    rate_limiter=None,
 ) -> Path:
     """Download an HTTPS GitHub release asset quickly and verify SHA-256.
 
@@ -231,6 +236,8 @@ def download_verified_asset(
                                         raise DownloadCancelled()
                                     if not chunk:
                                         continue
+                                    if download_control is not None:
+                                        download_control.checkpoint(len(chunk), rate_limiter)
                                     output.write(chunk)
                                     received += len(chunk)
                                     now = time.monotonic()
@@ -279,7 +286,8 @@ def download_verified_asset(
                 temporary.unlink(missing_ok=True)
 
         if not used_parallel:
-            _download_single(str(url), temporary, total, progress, cancel_event, started, timeout)
+            _download_single(str(url), temporary, total, progress, cancel_event, started, timeout,
+                             download_control, rate_limiter)
 
         if cancel_event is not None and cancel_event.is_set():
             raise DownloadCancelled()

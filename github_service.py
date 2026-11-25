@@ -165,15 +165,30 @@ class AssetDownloadWorker(QThread):
     failed = pyqtSignal(str)
     cancelled = pyqtSignal()
 
-    def __init__(self, url: str, expected_sha256: str, filename: str, parent=None):
+    def __init__(self, url: str, expected_sha256: str, filename: str, parent=None,
+                 download_control=None, rate_limiter=None):
         super().__init__(parent)
         self.url = str(url)
         self.expected_sha256 = str(expected_sha256).lower()
         self.filename = Path(filename).name
-        self._cancel = threading.Event()
+        self.download_control = download_control
+        self.rate_limiter = rate_limiter
+        self._cancel = (download_control.cancel_event if download_control is not None
+                        else threading.Event())
 
     def cancel(self) -> None:
-        self._cancel.set()
+        if self.download_control is not None:
+            self.download_control.cancel()
+        else:
+            self._cancel.set()
+
+    def pause(self) -> None:
+        if self.download_control is not None:
+            self.download_control.pause()
+
+    def resume(self) -> None:
+        if self.download_control is not None:
+            self.download_control.resume()
 
     def run(self) -> None:
         try:
@@ -188,6 +203,7 @@ class AssetDownloadWorker(QThread):
             download_verified_asset(
                 self.url, self.expected_sha256, target,
                 progress=report, cancel_event=self._cancel, max_workers=6,
+                download_control=self.download_control, rate_limiter=self.rate_limiter,
             )
             self.completed.emit(str(target))
         except DownloadCancelled:

@@ -27,6 +27,7 @@ from typing import Any
 import minecraft_launcher_lib as mll
 import psutil
 from PyQt5.QtCore import QThread, pyqtSignal
+from update_download import DownloadCancelled
 
 from version import LAUNCHER_NAME, LAUNCHER_VERSION
 from version_metadata import read_version_metadata
@@ -42,40 +43,104 @@ _LOADER_VERSION_CACHE_LOCK = threading.Lock()
 _LOADER_VERSION_CACHE_TTL = 600.0
 
 
-def _callback(worker: QThread):
-    state = {"current": 0.0, "maximum": 0.0, "status": "Подготовка…"}
+def _callback(worker: QThread, rate_limiter=None):
+    state = {
+        "current": 0.0, "maximum": 0.0, "status": "Подготовка…",
+        "sample_current": 0.0, "sample_time": time.monotonic(), "speed": 0.0,
+        "last_download_current": 0.0,
+    }
+
+    def check_cancelled():
+        control = getattr(worker, "download_control", None)
+        if control is not None:
+            control.checkpoint(0, rate_limiter)
+            return
+        cancel_event = getattr(worker, "cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем.")
+
+    def emit_progress(percent: int = -1):
+        signal = getattr(worker, "progress", None)
+        if signal is None or worker.__class__.__name__ == "LaunchWorker":
+            return
+        maximum = state["maximum"]
+        current_value = state["current"]
+        now = time.monotonic()
+        elapsed = now - state["sample_time"]
+        if elapsed >= 0.15:
+            delta = current_value - state["sample_current"]
+            if delta >= 0:
+                instantaneous = delta / max(elapsed, 0.001)
+                state["speed"] = instantaneous if state["speed"] <= 0 else (
+                    state["speed"] * 0.55 + instantaneous * 0.45
+                )
+            state["sample_current"] = current_value
+            state["sample_time"] = now
+
+        message = state["status"]
+        # Fast/small files may complete before the 150 ms sampling interval.
+        # Show an average rate in that case instead of a misleading 0.00 МБ/с.
+        speed = state["speed"]
+        if speed <= 0 and elapsed >= 0.01 and current_value > 0:
+            speed = current_value / elapsed
+        if maximum > 0:
+            file_percent = max(0, min(100, int(current_value * 100 / maximum)))
+            message = (
+                f"{message} · текущий файл {file_percent}% · "
+                f"{current_value / 1048576:.1f}/{maximum / 1048576:.1f} МБ · "
+                f"{speed / 1048576:.2f} МБ/с"
+            )
+            if percent < 0:
+                percent = file_percent
+        elif speed > 0:
+            message = f"{message} · {speed / 1048576:.2f} МБ/с"
+        signal.emit(max(-1, min(100, int(percent))), message)
 
     def status(value: Any) -> None:
+        check_cancelled()
         state["status"] = str(value)
         signal = getattr(worker, "progress", None)
         if signal is not None:
             if worker.__class__.__name__ == "LaunchWorker":
                 signal.emit(state["status"])
             else:
-                signal.emit(-1, state["status"])
+                emit_progress(-1)
 
     def current(value: Any) -> None:
+        check_cancelled()
         try:
-            state["current"] = float(value or 0)
+            new_current = float(value or 0)
         except (TypeError, ValueError):
-            state["current"] = 0
+            new_current = 0.0
+        delta = max(0.0, new_current - state["last_download_current"])
+        state["last_download_current"] = new_current
+        control = getattr(worker, "download_control", None)
+        if control is not None and delta > 0:
+            control.checkpoint(int(delta), rate_limiter)
+        state["current"] = new_current
         maximum = state["maximum"]
         percent = int(state["current"] * 100 / maximum) if maximum else 0
-        signal = getattr(worker, "progress", None)
-        if signal is not None and worker.__class__.__name__ != "LaunchWorker":
-            signal.emit(max(0, min(100, percent)), state["status"])
+        emit_progress(max(0, min(100, percent)) if maximum else -1)
 
     def maximum(value: Any) -> None:
+        check_cancelled()
         try:
             state["maximum"] = float(value or 0)
         except (TypeError, ValueError):
             state["maximum"] = 0
+        state["current"] = 0.0
+        state["last_download_current"] = 0.0
+        state["sample_current"] = 0.0
+        state["sample_time"] = time.monotonic()
+        state["speed"] = 0.0
         current(state["current"])
 
     return {"setStatus": status, "setProgress": current, "setMax": maximum}
 
 
-def _download_neoforge_file(url: str, destination: Path, progress=None) -> Path:
+def _download_neoforge_file(url: str, destination: Path, progress=None,
+                            cancel_event: threading.Event | None = None,
+                            download_control=None, rate_limiter=None) -> Path:
     """Downloads a NeoForge installer atomically, retries transient network errors.
 
     The reported error in earlier logs was a TCP connect timeout, not an invalid
@@ -87,6 +152,8 @@ def _download_neoforge_file(url: str, destination: Path, progress=None) -> Path:
     last_error = None
     headers = {"User-Agent": LAUNCHER_NAME, "Accept": "application/java-archive, */*"}
     for attempt in range(3):
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Загрузка NeoForge отменена.")
         temporary.unlink(missing_ok=True)
         try:
             if progress:
@@ -100,18 +167,41 @@ def _download_neoforge_file(url: str, destination: Path, progress=None) -> Path:
                 if expected and expected > 256 * 1024 * 1024:
                     raise RuntimeError("Размер установщика NeoForge неожиданно велик.")
                 written = 0
+                started = time.monotonic()
+                last_report = started
                 with temporary.open("wb") as output:
                     for chunk in response.iter_content(256 * 1024):
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise DownloadCancelled("Загрузка NeoForge отменена.")
                         if not chunk:
                             continue
+                        if download_control is not None:
+                            download_control.checkpoint(len(chunk), rate_limiter)
                         written += len(chunk)
                         if written > 256 * 1024 * 1024:
                             raise RuntimeError("Установщик NeoForge превысил лимит 256 МБ.")
                         output.write(chunk)
+                        now = time.monotonic()
+                        if progress and (now - last_report >= 0.2 or (expected and written >= expected)):
+                            speed = written / max(now - started, 0.001) / 1048576
+                            amount = (f"{written / 1048576:.1f}/{expected / 1048576:.1f} МБ"
+                                      if expected else f"{written / 1048576:.1f} МБ")
+                            pct_label = f"{int(written * 100 / expected)}% · " if expected else ""
+                            progress(f"NeoForge · {pct_label}{amount} · {speed:.2f} МБ/с")
+                            last_report = now
+                if progress:
+                    elapsed = max(time.monotonic() - started, 0.001)
+                    amount = (f"{written / 1048576:.1f}/{expected / 1048576:.1f} МБ"
+                              if expected else f"{written / 1048576:.1f} МБ")
+                    pct_label = f"100% · " if expected else "Загружено · "
+                    progress(f"NeoForge · {pct_label}{amount} · {written / elapsed / 1048576:.2f} МБ/с")
                 if written < 1024 or not zipfile.is_zipfile(temporary):
                     raise RuntimeError("Скачанный установщик NeoForge повреждён или это не JAR-файл.")
             temporary.replace(destination)
             return destination
+        except DownloadCancelled:
+            temporary.unlink(missing_ok=True)
+            raise
         except (requests.RequestException, OSError, RuntimeError) as exc:
             last_error = exc
             temporary.unlink(missing_ok=True)
@@ -134,7 +224,9 @@ def _download_neoforge_file(url: str, destination: Path, progress=None) -> Path:
 
 
 def install_neoforge_client(minecraft_version: str, loader_version: str, game_root: str | Path,
-                            java_path: str, progress=None) -> str:
+                            java_path: str, progress=None,
+                            cancel_event: threading.Event | None = None,
+                            download_control=None, rate_limiter=None) -> str:
     """Install NeoForge through its official installer in a launcher-compatible game root.
 
     The vanilla parent is installed by InstallMinecraftWorker before this function.
@@ -177,7 +269,8 @@ def install_neoforge_client(minecraft_version: str, loader_version: str, game_ro
     installer_dir = game_root / ".fiercy" / "installers"
     installer = installer_dir / installer_name
     if not installer.is_file() or not zipfile.is_zipfile(installer):
-        _download_neoforge_file(installer_url, installer, progress)
+        _download_neoforge_file(installer_url, installer, progress, cancel_event,
+                                 download_control, rate_limiter)
 
     launcher_profiles_path = game_root / "launcher_profiles.json"
     if not launcher_profiles_path.exists():
@@ -273,6 +366,9 @@ def install_neoforge_profile(
     java_path: str,
     callback: dict | None = None,
     progress=None,
+    cancel_event: threading.Event | None = None,
+    download_control=None,
+    rate_limiter=None,
 ) -> str:
     """Install NeoForge using minecraft-launcher-lib's supported adapter.
 
@@ -315,7 +411,8 @@ def install_neoforge_profile(
             ) from exc
     else:
         installed_id = install_neoforge_client(
-            mc_version, selected_loader_version, root, str(java_path), progress,
+            mc_version, selected_loader_version, root, str(java_path), progress, cancel_event,
+            download_control, rate_limiter,
         )
         if progress:
             progress("Проверка библиотек и наследуемых файлов NeoForge…")
@@ -498,6 +595,8 @@ def _install_adoptium_runtime(major: int, minecraft_dir: Path, callback: dict | 
     total = int(response.headers.get("Content-Length", "0") or 0)
     downloaded = 0
     try:
+        if callback and callback.get("setMax") and total:
+            callback["setMax"](total)
         with archive_path.open("wb") as handle:
             for chunk in response.iter_content(1024 * 1024):
                 if not chunk:
@@ -508,8 +607,6 @@ def _install_adoptium_runtime(major: int, minecraft_dir: Path, callback: dict | 
                     raise RuntimeError("Загрузка Java превысила 1 ГБ — файл отклонён.")
                 if callback and callback.get("setProgress") and total:
                     callback["setProgress"](downloaded)
-                    if callback.get("setMax"):
-                        callback["setMax"](total)
     finally:
         response.close()
     if not archive_path.is_file() or archive_path.stat().st_size == 0:
@@ -674,10 +771,11 @@ class InstallMinecraftWorker(QThread):
     progress = pyqtSignal(int, str)
     completed = pyqtSignal(dict)
     failed = pyqtSignal(str)
+    cancelled = pyqtSignal()
 
     def __init__(self, profile: dict, game_root: str, instance_dir: str, minecraft_version: str,
                  loader: str = "vanilla", loader_version: str = "", java_path: str = "",
-                 auto_java: bool = True):
+                 auto_java: bool = True, download_control=None, rate_limiter=None):
         super().__init__()
         self.profile = dict(profile)
         self.game_root = Path(game_root).expanduser().resolve()
@@ -687,11 +785,36 @@ class InstallMinecraftWorker(QThread):
         self.loader_version = loader_version.strip()
         self.java_path = java_path.strip()
         self.auto_java = bool(auto_java)
+        self.download_control = download_control
+        self.rate_limiter = rate_limiter
+        self.cancel_event = (download_control.cancel_event if download_control is not None
+                             else threading.Event())
+
+    def cancel(self) -> None:
+        if self.download_control is not None:
+            self.download_control.cancel()
+        else:
+            self.cancel_event.set()
+
+    def pause(self) -> None:
+        if self.download_control is not None:
+            self.download_control.pause()
+
+    def resume(self) -> None:
+        if self.download_control is not None:
+            self.download_control.resume()
+
+    def _check_cancelled(self) -> None:
+        if self.download_control is not None:
+            self.download_control.checkpoint(0, self.rate_limiter)
+        elif self.cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем.")
 
     def run(self) -> None:
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                self._check_cancelled()
                 if not self.minecraft_version:
                     raise RuntimeError("Сначала выбери версию Minecraft.")
                 self.game_root.mkdir(parents=True, exist_ok=True)
@@ -699,10 +822,11 @@ class InstallMinecraftWorker(QThread):
                 for folder in ("mods", "config", "saves", "resourcepacks", "shaderpacks", "screenshots"):
                     (self.instance_dir / folder).mkdir(parents=True, exist_ok=True)
 
-                callback = _callback(self)
+                callback = _callback(self, self.rate_limiter)
                 self.progress.emit(0, "Проверка общей библиотеки Minecraft…")
                 mll.install.install_minecraft_version(self.minecraft_version, str(self.game_root), callback=callback)
 
+                self._check_cancelled()
                 installed_id = self.minecraft_version
                 java = resolve_java(self.minecraft_version, self.game_root, self.java_path,
                                     self.auto_java, callback=callback)
@@ -718,6 +842,9 @@ class InstallMinecraftWorker(QThread):
                         installed_id = install_neoforge_profile(
                             self.minecraft_version, self.loader_version, self.game_root,
                             java, callback=callback, progress=_neo_progress,
+                            cancel_event=self.cancel_event,
+                            download_control=self.download_control,
+                            rate_limiter=self.rate_limiter,
                         )
                     else:
                         loader = mll.mod_loader.get_mod_loader(self.loader)
@@ -742,10 +869,15 @@ class InstallMinecraftWorker(QThread):
                     "loader_version": resolved_loader_version,
                     "installed_version_id": str(installed_id),
                 }
+                self._check_cancelled()
                 log.info("Установка готова: %s (%s)", self.minecraft_version, installed_id)
                 self.completed.emit(result)
                 return # Выходим из цикла, если успешно
 
+            except DownloadCancelled:
+                log.info("Установка Minecraft отменена пользователем: %s", self.minecraft_version)
+                self.cancelled.emit()
+                return
             except Exception as exc:
                 # Если это ошибка контрольной суммы (битый файл)
                 if "InvalidChecksum" in str(exc) or "wrong Checksum" in str(exc):
@@ -762,12 +894,16 @@ class InstallMinecraftWorker(QThread):
                             except Exception:
                                 pass
                     import time
-                    time.sleep(2) # Ждем и пробуем снова
+                    if self.cancel_event.wait(2):
+                        self.cancelled.emit()
+                        return
                     continue
                 elif isinstance(exc, requests.exceptions.RequestException) and attempt < max_retries - 1:
                     log.warning("Сетевая ошибка установки (попытка %s/%s): %s", attempt + 1, max_retries, exc)
                     self.progress.emit(-1, f"Проблема сети. Повторяем установку ({attempt + 2}/{max_retries})…")
-                    time.sleep(2 ** (attempt + 1))
+                    if self.cancel_event.wait(2 ** (attempt + 1)):
+                        self.cancelled.emit()
+                        return
                     continue
                 else:
                     log.exception("Ошибка установки Minecraft")

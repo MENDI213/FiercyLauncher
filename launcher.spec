@@ -14,6 +14,7 @@ hidden = [
     "keyring", "requests", "packaging.version", "psutil",
     "keyring.backends.Windows", "keyring.backends.SecretService", "pypresence",
     "ui_controls", "profile_dialog", "mod_service", "modpack_service", "instance_import", "storage_worker", "version_metadata",
+    "activity_drawer", "download_control", "discord_presence",
     "certifi", "certifi.core", "tls_bootstrap",
 ]
 hidden += collect_submodules("minecraft_launcher_lib")
