@@ -161,3 +161,38 @@ def test_speed_tracker_resets_after_retry_restarts_progress(monkeypatch):
     clock["now"] = 2.0
     speed = tracker.update(1024 * 1024)
     assert speed == 1024 * 1024
+
+
+def test_parallel_download_reports_actual_worker_count(monkeypatch, tmp_path: Path):
+    payload = b"parallel-range-test" * 2_700_000
+    total = len(payload)
+    url = "https://github.com/MENDI213/FiercyLauncher/releases/download/v9.9.9/test.zip"
+    labels = []
+
+    def fake_get(request_url, headers=None, **_kwargs):
+        range_header = (headers or {}).get("Range", "")
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d+)-(\d+)", range_header)
+            assert match
+            start, end = map(int, match.groups())
+            body = payload[start:end + 1]
+            return FakeResponse(
+                body, 206,
+                {"Content-Range": f"bytes {start}-{end}/{total}",
+                 "Content-Length": str(len(body))},
+                request_url,
+            )
+        return FakeResponse(payload, 200, {"Content-Length": str(total)}, request_url)
+
+    monkeypatch.setattr(update_download.requests, "get", fake_get)
+    target = tmp_path / "parallel.zip"
+    update_download.download_verified_asset(
+        url,
+        hashlib.sha256(payload).hexdigest(),
+        target,
+        expected_size=total,
+        max_workers=24,
+        progress=lambda _done, _total, _speed, label: labels.append(label),
+    )
+    assert target.read_bytes() == payload
+    assert any("24 потоков" in label for label in labels)

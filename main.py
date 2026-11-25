@@ -12,7 +12,7 @@ from tls_bootstrap import configure_tls_bundle
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, QSettings
 from PyQt5.QtGui import QColor, QFont, QIcon
 from PyQt5.QtWidgets import (
-    QApplication, QDialog, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
+    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QProgressBar, QPushButton, QFrame, QGraphicsOpacityEffect,
 )
 
@@ -122,7 +122,7 @@ class BootstrapWorker(QThread):
                 expected_size=int(release.get("size", 0) or 0),
                 progress=report,
                 cancel_event=self._cancel,
-                max_workers=12,
+                max_workers=24,
             )
         except DownloadCancelled:
             log.info("Пользователь отменил загрузку обновления при запуске")
@@ -188,17 +188,24 @@ class BootstrapWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class SplashScreen(QDialog):
+class SplashScreen(QWidget):
     cancelled = pyqtSignal()
 
     def __init__(self):
         super().__init__(None)
-        # A normal top-level window: users can move/minimize it and bring other
-        # applications to the foreground while the startup update is downloading.
-        self.setWindowFlags(
+        # Explicit native, non-modal Windows window. Do not use FramelessWindowHint
+        # or WindowStaysOnTopHint: the user must be able to move/minimize it and
+        # switch to other applications while the update is downloading.
+        flags = (
             Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
-            | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint
+            | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
+            | Qt.WindowCloseButtonHint
         )
+        flags &= ~Qt.FramelessWindowHint
+        flags &= ~Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        self.setWindowModality(Qt.NonModal)
+        self.setAttribute(Qt.WA_QuitOnClose, False)
         self.setObjectName("SplashDialog")
         self.setWindowTitle(f"{LAUNCHER_NAME} — обновление")
         self.resize(570, 320)
@@ -211,7 +218,7 @@ class SplashScreen(QDialog):
         splash_bg = (f"qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 {palette['window']},stop:1 {palette['panel']})"
                      if geometry.get("background_gradient", True) else palette["window"])
         self.setStyleSheet(f"""
-            QDialog#SplashDialog {{ background: {splash_bg}; border: 1px solid {palette['border']}; border-radius: {geometry['window_radius']}px; }}
+            QWidget#SplashDialog {{ background: {splash_bg}; border: 1px solid {palette['border']}; border-radius: {geometry['window_radius']}px; }}
             QLabel {{ color: {palette['text']}; font-family: '{geometry['font_family']}'; }}
             QLabel#Mark {{ background: {accent_bg}; color: {palette['button_text']}; border-radius: {geometry['card_radius']}px; font-size: 36pt; font-weight: 900; }}
             QLabel#Brand {{ font-size: 19pt; font-weight: 900; letter-spacing: 1px; }}
@@ -259,7 +266,7 @@ class SplashScreen(QDialog):
         progress_row.addWidget(self.percent)
         layout.addLayout(progress_row)
         bottom = QHBoxLayout()
-        self.note_label = QLabel("Проверка выполняется в отдельном потоке — интерфейс не зависает.")
+        self.note_label = QLabel("Перед установкой архив будет проверен по контрольной сумме SHA-256.")
         self.note_label.setObjectName("Sub")
         self.note_label.setWordWrap(True)
         bottom.addWidget(self.note_label, 1)
@@ -300,7 +307,8 @@ class Application:
         self._cancel_requested = False
 
     def start(self):
-        self.splash.show()
+        self.splash.showNormal()
+        self.splash.activateWindow()
         self.worker.start()
 
     def cancel_startup(self):

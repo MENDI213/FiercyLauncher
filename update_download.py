@@ -46,24 +46,28 @@ class _SpeedTracker:
         self.window_seconds = max(1.0, float(window_seconds))
         self.samples = deque([(started, 0)])
         self.last_done = 0
+        self._lock = threading.Lock()
 
     def update(self, done: int) -> float:
-        now = time.monotonic()
-        done = max(0, int(done))
-        # A retry can restart a range/file. Reset the sample window so a retry
-        # does not produce a negative or misleading speed value.
-        if done < self.last_done:
-            self.samples.clear()
-            self.samples.append((now, done))
+        # Several range workers report progress concurrently. Keep the rolling
+        # window coherent even if callbacks arrive almost simultaneously.
+        with self._lock:
+            now = time.monotonic()
+            done = max(0, int(done))
+            # A retry can restart a range/file. Reset the sample window so a retry
+            # does not produce a negative or misleading speed value.
+            if done < self.last_done:
+                self.samples.clear()
+                self.samples.append((now, done))
+                self.last_done = done
+                return 0.0
             self.last_done = done
-            return 0.0
-        self.last_done = done
-        self.samples.append((now, done))
-        while len(self.samples) > 1 and now - self.samples[0][0] > self.window_seconds:
-            self.samples.popleft()
-        first_time, first_done = self.samples[0]
-        elapsed = max(0.001, now - first_time)
-        return max(0.0, (done - first_done) / elapsed)
+            self.samples.append((now, done))
+            while len(self.samples) > 1 and now - self.samples[0][0] > self.window_seconds:
+                self.samples.popleft()
+            first_time, first_done = self.samples[0]
+            elapsed = max(0.001, now - first_time)
+            return max(0.0, (done - first_done) / elapsed)
 
 
 def _notify(callback: ProgressCallback | None, done: int, total: int,
@@ -151,8 +155,8 @@ def _download_single(url: str, temporary: Path, expected_size: int,
                         output.write(chunk)
                         done += len(chunk)
                         _notify(callback, done, total, started,
-                                f"Загрузка {done / 1048576:.1f} МБ / {total / 1048576:.1f} МБ" if total else
-                                f"Загрузка {done / 1048576:.1f} МБ", speed_tracker)
+                                f"GitHub · 1 поток: {done / 1048576:.1f} / {total / 1048576:.1f} МБ" if total else
+                                f"GitHub · 1 поток: {done / 1048576:.1f} МБ", speed_tracker)
                 if total and done != total:
                     raise IOError(f"Сервер передал {done} байт вместо {total} байт.")
                 return done
@@ -174,7 +178,7 @@ def download_verified_asset(
     expected_size: int = 0,
     progress: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
-    max_workers: int = 6,
+    max_workers: int = 24,
     download_control=None,
     rate_limiter=None,
 ) -> Path:
@@ -220,7 +224,11 @@ def download_verified_asset(
         used_parallel = False
 
         if ranges_supported and total >= 4 * 1024 * 1024:
-            worker_count = min(max(4, int(max_workers)), 12, max(2, math.ceil(total / (2 * 1024 * 1024))))
+            # Up to 24 independent TCP connections. A 2 MiB range is small
+            # enough to balance uneven CDN nodes without creating hundreds of
+            # tiny requests for a typical launcher archive.
+            worker_count = min(max(4, int(max_workers)), 24,
+                               max(2, math.ceil(total / (2 * 1024 * 1024))))
             chunk_size = math.ceil(total / worker_count)
             ranges: list[tuple[int, int, Path]] = []
             for index in range(worker_count):
@@ -277,12 +285,15 @@ def download_verified_asset(
                                         if now - last_emit >= 0.18 or aggregate_done >= total:
                                             last_emit = now
                                             snapshot = aggregate_done
-                                        else:
-                                            snapshot = -1
-                                    if snapshot >= 0:
-                                        _notify(progress, snapshot, total, started,
-                                                f"Быстрая загрузка: {snapshot / 1048576:.1f} / {total / 1048576:.1f} МБ",
-                                                speed_tracker)
+                                            # Emit while holding the aggregation lock so
+                                            # concurrent workers cannot publish stale byte
+                                            # totals after newer progress snapshots.
+                                            _notify(
+                                                progress, snapshot, total, started,
+                                                f"GitHub · {worker_count} потоков: "
+                                                f"{snapshot / 1048576:.1f} / {total / 1048576:.1f} МБ",
+                                                speed_tracker,
+                                            )
                         if received != expected_part:
                             raise IOError(f"Часть архива повреждена: {received} вместо {expected_part} байт.")
                         return received
@@ -296,6 +307,9 @@ def download_verified_asset(
                             time.sleep(0.5 * attempt)
                 raise RuntimeError(f"Не удалось получить часть архива {index + 1}: {last_error}") from last_error
 
+            _notify(progress, 0, total, started,
+                    f"GitHub Releases · параллельная загрузка, {worker_count} потоков",
+                    speed_tracker)
             try:
                 with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="fiercy-update") as pool:
                     futures = [pool.submit(fetch_part, i, start, end, part)
@@ -317,11 +331,16 @@ def download_verified_asset(
                 temporary.unlink(missing_ok=True)
 
         if not used_parallel:
+            reason = "CDN не поддержал Range-запросы" if not ranges_supported else "параллельная загрузка не удалась"
+            log.warning("Using single-stream update download: %s", reason)
+            _notify(progress, 0, total, started,
+                    f"GitHub · один поток ({reason})", speed_tracker)
             _download_single(str(url), temporary, total, progress, cancel_event, started, timeout,
                              download_control, rate_limiter, speed_tracker)
 
         if cancel_event is not None and cancel_event.is_set():
             raise DownloadCancelled()
+        _notify(progress, total, total, started, "Проверка целостности архива…", speed_tracker)
         actual = sha256_file(temporary)
         if actual != expected_sha256:
             raise ValueError("SHA-256 не совпал. Архив обновления удалён, текущая версия не изменена.")
