@@ -122,7 +122,7 @@ class BootstrapWorker(QThread):
                 expected_size=int(release.get("size", 0) or 0),
                 progress=report,
                 cancel_event=self._cancel,
-                max_workers=8,
+                max_workers=12,
             )
         except DownloadCancelled:
             log.info("Пользователь отменил загрузку обновления при запуске")
@@ -193,9 +193,17 @@ class SplashScreen(QDialog):
 
     def __init__(self):
         super().__init__(None)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window | Qt.WindowStaysOnTopHint)
+        # A normal top-level window: users can move/minimize it and bring other
+        # applications to the foreground while the startup update is downloading.
+        self.setWindowFlags(
+            Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+            | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint
+        )
         self.setObjectName("SplashDialog")
-        self.setFixedSize(520, 300)
+        self.setWindowTitle(f"{LAUNCHER_NAME} — обновление")
+        self.resize(570, 320)
+        self.setMinimumSize(520, 290)
+        self._allow_close = False
         appearance = AppearanceManager(QSettings("Fiercy", "FiercyLauncher")).load()
         palette, geometry = appearance["palette"], appearance["geometry"]
         accent_bg = (f"qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 {palette['accent']},stop:1 {palette['accent2']})"
@@ -260,6 +268,16 @@ class SplashScreen(QDialog):
         bottom.addWidget(self.cancel_button)
         layout.addLayout(bottom)
 
+    def finish_and_close(self):
+        self._allow_close = True
+        self.close()
+
+    def closeEvent(self, event):
+        # Clicking the title-bar X cancels the current startup operation.
+        if not self._allow_close:
+            self.cancelled.emit()
+        event.accept()
+
     def set_progress(self, value: int, text: str):
         self.progress.setValue(value)
         self.percent.setText(f"{value}%")
@@ -293,7 +311,7 @@ class Application:
 
     def _worker_finished(self):
         if self._cancel_requested:
-            self.splash.close()
+            self.splash.finish_and_close()
             self.app.quit()
 
     def startup_failed(self, message: str):
@@ -323,7 +341,7 @@ class Application:
         self.window = LauncherWindow()
         self.window.setWindowOpacity(0.0)
         self.window.show()
-        self.splash.close()
+        self.splash.finish_and_close()
         self.animation = QPropertyAnimation(self.window, b"windowOpacity", self.window)
         self.animation.setDuration(260)
         self.animation.setStartValue(0.0)

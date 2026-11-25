@@ -130,3 +130,34 @@ def test_update_redirect_to_untrusted_host_is_rejected(monkeypatch):
     else:
         raise AssertionError("Untrusted redirect must be rejected")
     assert len(calls) == 1
+
+
+def test_speed_tracker_reports_recent_speed_not_lifetime_average(monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(update_download.time, "monotonic", lambda: clock["now"])
+    tracker = update_download._SpeedTracker(started=0.0, window_seconds=3.0)
+
+    # Simulate a long DNS/CDN startup delay before the first chunk arrives.
+    clock["now"] = 120.0
+    first = tracker.update(12 * 1024 * 1024)
+    assert first == 0.0
+
+    # The next 12 MiB arrive in one second: current speed should be 12 MiB/s,
+    # not the misleading 0.2 MiB/s lifetime average.
+    clock["now"] = 121.0
+    current = tracker.update(24 * 1024 * 1024)
+    assert current == 12 * 1024 * 1024
+
+
+def test_speed_tracker_resets_after_retry_restarts_progress(monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(update_download.time, "monotonic", lambda: clock["now"])
+    tracker = update_download._SpeedTracker(started=0.0, window_seconds=3.0)
+    clock["now"] = 1.0
+    tracker.update(2 * 1024 * 1024)
+    clock["now"] = 1.5
+    speed = tracker.update(512 * 1024)
+    assert speed == 0.0
+    clock["now"] = 2.0
+    speed = tracker.update(1024 * 1024)
+    assert speed == 1024 * 1024

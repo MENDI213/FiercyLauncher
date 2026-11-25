@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
@@ -38,12 +39,40 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest().lower()
 
 
+class _SpeedTracker:
+    """Estimate current throughput from a rolling window, not lifetime average."""
+
+    def __init__(self, started: float, window_seconds: float = 3.0) -> None:
+        self.window_seconds = max(1.0, float(window_seconds))
+        self.samples = deque([(started, 0)])
+        self.last_done = 0
+
+    def update(self, done: int) -> float:
+        now = time.monotonic()
+        done = max(0, int(done))
+        # A retry can restart a range/file. Reset the sample window so a retry
+        # does not produce a negative or misleading speed value.
+        if done < self.last_done:
+            self.samples.clear()
+            self.samples.append((now, done))
+            self.last_done = done
+            return 0.0
+        self.last_done = done
+        self.samples.append((now, done))
+        while len(self.samples) > 1 and now - self.samples[0][0] > self.window_seconds:
+            self.samples.popleft()
+        first_time, first_done = self.samples[0]
+        elapsed = max(0.001, now - first_time)
+        return max(0.0, (done - first_done) / elapsed)
+
+
 def _notify(callback: ProgressCallback | None, done: int, total: int,
-            started: float, label: str = "Загрузка обновления") -> None:
+            started: float, label: str = "Загрузка обновления",
+            speed_tracker: _SpeedTracker | None = None) -> None:
     if callback is None:
         return
     elapsed = max(0.001, time.monotonic() - started)
-    speed = done / elapsed
+    speed = speed_tracker.update(done) if speed_tracker is not None else done / elapsed
     try:
         callback(done, total, speed, label)
     except Exception:
@@ -99,7 +128,7 @@ def _probe_ranges(url: str, timeout: tuple[int, int]) -> tuple[bool, int]:
 def _download_single(url: str, temporary: Path, expected_size: int,
                      callback: ProgressCallback | None, cancel_event: threading.Event | None,
                      started: float, timeout: tuple[int, int], download_control=None,
-                     rate_limiter=None) -> int:
+                     rate_limiter=None, speed_tracker: _SpeedTracker | None = None) -> int:
     last_error: Exception | None = None
     for attempt in range(1, 4):
         temporary.unlink(missing_ok=True)
@@ -123,7 +152,7 @@ def _download_single(url: str, temporary: Path, expected_size: int,
                         done += len(chunk)
                         _notify(callback, done, total, started,
                                 f"Загрузка {done / 1048576:.1f} МБ / {total / 1048576:.1f} МБ" if total else
-                                f"Загрузка {done / 1048576:.1f} МБ")
+                                f"Загрузка {done / 1048576:.1f} МБ", speed_tracker)
                 if total and done != total:
                     raise IOError(f"Сервер передал {done} байт вместо {total} байт.")
                 return done
@@ -173,6 +202,7 @@ def download_verified_asset(
     destination.unlink(missing_ok=True)
 
     started = time.monotonic()
+    speed_tracker = _SpeedTracker(started)
     temporary = destination.with_name(destination.name + ".download")
     temporary.unlink(missing_ok=True)
     timeout = (15, 90)
@@ -190,7 +220,7 @@ def download_verified_asset(
         used_parallel = False
 
         if ranges_supported and total >= 4 * 1024 * 1024:
-            worker_count = min(max(2, int(max_workers)), 8, max(2, math.ceil(total / (4 * 1024 * 1024))))
+            worker_count = min(max(4, int(max_workers)), 12, max(2, math.ceil(total / (2 * 1024 * 1024))))
             chunk_size = math.ceil(total / worker_count)
             ranges: list[tuple[int, int, Path]] = []
             for index in range(worker_count):
@@ -251,7 +281,8 @@ def download_verified_asset(
                                             snapshot = -1
                                     if snapshot >= 0:
                                         _notify(progress, snapshot, total, started,
-                                                f"Быстрая загрузка: {snapshot / 1048576:.1f} / {total / 1048576:.1f} МБ")
+                                                f"Быстрая загрузка: {snapshot / 1048576:.1f} / {total / 1048576:.1f} МБ",
+                                                speed_tracker)
                         if received != expected_part:
                             raise IOError(f"Часть архива повреждена: {received} вместо {expected_part} байт.")
                         return received
@@ -287,7 +318,7 @@ def download_verified_asset(
 
         if not used_parallel:
             _download_single(str(url), temporary, total, progress, cancel_event, started, timeout,
-                             download_control, rate_limiter)
+                             download_control, rate_limiter, speed_tracker)
 
         if cancel_event is not None and cancel_event.is_set():
             raise DownloadCancelled()
@@ -300,7 +331,7 @@ def download_verified_asset(
         sidecar_tmp.write_text(expected_sha256 + "\n", encoding="ascii")
         os.replace(sidecar_tmp, sidecar)
         size = destination.stat().st_size
-        _notify(progress, size, size, started, f"Загрузка завершена: {destination.name}")
+        _notify(progress, size, size, started, f"Загрузка завершена: {destination.name}", speed_tracker)
         return destination
     except DownloadCancelled:
         raise
