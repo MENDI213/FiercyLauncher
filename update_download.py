@@ -72,11 +72,12 @@ class _SpeedTracker:
 
 def _notify(callback: ProgressCallback | None, done: int, total: int,
             started: float, label: str = "Загрузка обновления",
-            speed_tracker: _SpeedTracker | None = None) -> None:
+            speed_tracker: _SpeedTracker | None = None,
+            speed_bytes: int | None = None) -> None:
     if callback is None:
         return
     elapsed = max(0.001, time.monotonic() - started)
-    speed = speed_tracker.update(done) if speed_tracker is not None else done / elapsed
+    speed = speed_tracker.update(done if speed_bytes is None else speed_bytes) if speed_tracker is not None else done / elapsed
     try:
         callback(done, total, speed, label)
     except Exception:
@@ -95,12 +96,17 @@ def _check_url(url: str) -> None:
         raise ValueError("Ссылка обновления должна вести на GitHub или его CDN по HTTPS.")
 
 
-def _safe_get(url: str, **kwargs):
-    """Follow only HTTPS redirects to GitHub-owned download hosts."""
+def _safe_get(url: str, session=None, **kwargs):
+    """Follow only HTTPS redirects to GitHub-owned download hosts.
+
+    A persistent Session may be supplied by a range worker so its TCP/TLS
+    connection can be reused for several consecutive chunks.
+    """
     current = url
+    client = session if session is not None else requests
     for _ in range(6):
         _check_url(current)
-        response = requests.get(current, allow_redirects=False, **kwargs)
+        response = client.get(current, allow_redirects=False, **kwargs)
         if response.status_code not in {301, 302, 303, 307, 308}:
             return response
         location = response.headers.get("Location")
@@ -224,26 +230,27 @@ def download_verified_asset(
         used_parallel = False
 
         if ranges_supported and total >= 4 * 1024 * 1024:
-            # Up to 24 independent TCP connections. A 2 MiB range is small
-            # enough to balance uneven CDN nodes without creating hundreds of
-            # tiny requests for a typical launcher archive.
-            worker_count = min(max(4, int(max_workers)), 24,
-                               max(2, math.ceil(total / (2 * 1024 * 1024))))
-            chunk_size = math.ceil(total / worker_count)
+            # Dynamic work queue: each worker reuses its own HTTP session and
+            # immediately requests the next 2 MiB range. A slow CDN range can no
+            # longer leave most of the connection pool idle near the end.
+            # 6-8 connections are usually faster and more stable than 24 on
+            # GitHub's CDN, which may throttle excessive parallel requests.
+            block_size = 2 * 1024 * 1024
             ranges: list[tuple[int, int, Path]] = []
-            for index in range(worker_count):
-                start = index * chunk_size
-                end = min(total - 1, start + chunk_size - 1)
-                if start <= end:
-                    ranges.append((start, end, work_dir / f"part-{index:02d}.bin"))
+            for index, start in enumerate(range(0, total, block_size)):
+                end = min(total - 1, start + block_size - 1)
+                ranges.append((start, end, work_dir / f"part-{index:04d}.bin"))
 
+            worker_count = min(max(1, int(max_workers)), 8, len(ranges))
             lock = threading.Lock()
+            next_range = 0
             part_progress = {index: 0 for index in range(len(ranges))}
             aggregate_done = 0
+            transferred_total = 0
             last_emit = 0.0
 
-            def fetch_part(index: int, start: int, end: int, part_path: Path) -> int:
-                nonlocal aggregate_done, last_emit
+            def fetch_part(session, index: int, start: int, end: int, part_path: Path) -> int:
+                nonlocal aggregate_done, transferred_total, last_emit
                 expected_part = end - start + 1
                 last_error: Exception | None = None
                 for attempt in range(1, 4):
@@ -260,7 +267,8 @@ def download_verified_asset(
                             "Accept-Encoding": "identity",
                             "Range": f"bytes={start}-{end}",
                         }
-                        with _safe_get(url, headers=headers, stream=True, timeout=timeout) as response:
+                        with _safe_get(url, session=session, headers=headers, stream=True,
+                                       timeout=timeout) as response:
                             response.raise_for_status()
                             if response.status_code != 206:
                                 raise IOError(f"Range-запрос вернул HTTP {response.status_code}, ожидался 206.")
@@ -269,7 +277,7 @@ def download_verified_asset(
                             if response.headers.get("Content-Range", "").strip().lower() != expected_header.lower():
                                 raise IOError("CDN вернул неправильный Content-Range для части архива.")
                             with part_path.open("wb") as output:
-                                for chunk in response.iter_content(chunk_size=512 * 1024):
+                                for chunk in response.iter_content(chunk_size=256 * 1024):
                                     if cancel_event is not None and cancel_event.is_set():
                                         raise DownloadCancelled()
                                     if not chunk:
@@ -282,17 +290,14 @@ def download_verified_asset(
                                     with lock:
                                         part_progress[index] = received
                                         aggregate_done += len(chunk)
+                                        transferred_total += len(chunk)
                                         if now - last_emit >= 0.18 or aggregate_done >= total:
                                             last_emit = now
-                                            snapshot = aggregate_done
-                                            # Emit while holding the aggregation lock so
-                                            # concurrent workers cannot publish stale byte
-                                            # totals after newer progress snapshots.
                                             _notify(
-                                                progress, snapshot, total, started,
+                                                progress, aggregate_done, total, started,
                                                 f"GitHub · {worker_count} потоков: "
-                                                f"{snapshot / 1048576:.1f} / {total / 1048576:.1f} МБ",
-                                                speed_tracker,
+                                                f"{aggregate_done / 1048576:.1f} / {total / 1048576:.1f} МБ",
+                                                speed_tracker, transferred_total,
                                             )
                         if received != expected_part:
                             raise IOError(f"Часть архива повреждена: {received} вместо {expected_part} байт.")
@@ -304,16 +309,33 @@ def download_verified_asset(
                         last_error = exc
                         part_path.unlink(missing_ok=True)
                         if attempt < 3:
-                            time.sleep(0.5 * attempt)
-                raise RuntimeError(f"Не удалось получить часть архива {index + 1}: {last_error}") from last_error
+                            time.sleep(0.4 * attempt)
+                raise RuntimeError(f"Не удалось получить диапазон {index + 1}: {last_error}") from last_error
+
+            def worker_loop(worker_id: int) -> None:
+                nonlocal next_range
+                session = requests.Session()
+                try:
+                    session.headers.update({"User-Agent": USER_AGENT, "Accept-Encoding": "identity"})
+                    while True:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise DownloadCancelled()
+                        with lock:
+                            if next_range >= len(ranges):
+                                return
+                            index = next_range
+                            next_range += 1
+                        start, end, part_path = ranges[index]
+                        fetch_part(session, index, start, end, part_path)
+                finally:
+                    session.close()
 
             _notify(progress, 0, total, started,
-                    f"GitHub Releases · параллельная загрузка, {worker_count} потоков",
+                    f"GitHub Releases · динамическая загрузка, {worker_count} потоков",
                     speed_tracker)
             try:
                 with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="fiercy-update") as pool:
-                    futures = [pool.submit(fetch_part, i, start, end, part)
-                               for i, (start, end, part) in enumerate(ranges)]
+                    futures = [pool.submit(worker_loop, worker_id) for worker_id in range(worker_count)]
                     for future in as_completed(futures):
                         future.result()
                 with temporary.open("wb") as output:
@@ -323,11 +345,11 @@ def download_verified_asset(
                 if temporary.stat().st_size != total:
                     raise IOError("Собранный архив имеет неверный размер.")
                 used_parallel = True
-                log.info("Release asset downloaded in %d parallel HTTP ranges", worker_count)
+                log.info("Release asset downloaded with %d workers and dynamic ranges", worker_count)
             except DownloadCancelled:
                 raise
             except Exception as exc:
-                log.warning("Parallel range download failed; falling back to one stream: %s", exc)
+                log.warning("Dynamic range download failed; falling back to one stream: %s", exc)
                 temporary.unlink(missing_ok=True)
 
         if not used_parallel:

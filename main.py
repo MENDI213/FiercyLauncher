@@ -13,7 +13,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCur
 from PyQt5.QtGui import QColor, QFont, QIcon
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QProgressBar, QPushButton, QFrame, QGraphicsOpacityEffect,
+    QProgressBar, QPushButton, QFrame, QGraphicsOpacityEffect, QSizeGrip,
 )
 
 from logging_setup import configure_logging, user_data_dir
@@ -122,7 +122,7 @@ class BootstrapWorker(QThread):
                 expected_size=int(release.get("size", 0) or 0),
                 progress=report,
                 cancel_event=self._cancel,
-                max_workers=24,
+                max_workers=8,
             )
         except DownloadCancelled:
             log.info("Пользователь отменил загрузку обновления при запуске")
@@ -188,22 +188,53 @@ class BootstrapWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class DraggableTitleBar(QFrame):
+    """Themed frameless title bar with native-style window dragging."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drag_offset = None
+        self.setMouseTracking(True)
+
+    def mousePressEvent(self, event):
+        window = self.window()
+        if event.button() == Qt.LeftButton and not window.isMaximized():
+            self._drag_offset = event.globalPos() - window.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        window = self.window()
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton and not window.isMaximized():
+            window.move(event.globalPos() - self._drag_offset)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            window = self.window()
+            if hasattr(window, "_toggle_maximized"):
+                window._toggle_maximized()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+
 class SplashScreen(QWidget):
     cancelled = pyqtSignal()
 
     def __init__(self):
         super().__init__(None)
-        # Explicit native, non-modal Windows window. Do not use FramelessWindowHint
-        # or WindowStaysOnTopHint: the user must be able to move/minimize it and
-        # switch to other applications while the update is downloading.
-        flags = (
-            Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
-            | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
-            | Qt.WindowCloseButtonHint
-        )
-        flags &= ~Qt.FramelessWindowHint
-        flags &= ~Qt.WindowStaysOnTopHint
-        self.setWindowFlags(flags)
+        # Frameless custom titlebar removes the white Windows caption while
+        # retaining move/minimize/maximize/close controls inside the app theme.
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_QuitOnClose, False)
         self.setObjectName("SplashDialog")
@@ -231,8 +262,32 @@ class SplashScreen(QWidget):
             QPushButton:hover {{ background: {palette['accent']}; color: {palette['button_text']}; }}
         """)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 27, 30, 23)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 10, 18, 12)
+        layout.setSpacing(12)
+
+        title_bar = DraggableTitleBar(self)
+        title_bar.setObjectName("UpdateTitleBar")
+        title_bar.setStyleSheet("QFrame#UpdateTitleBar { background: transparent; border: 0; }")
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(2, 0, 0, 0)
+        title_layout.setSpacing(6)
+        title_text = QLabel("FIERCY LAUNCHER  ·  ОБНОВЛЕНИЕ")
+        title_text.setObjectName("Sub")
+        title_text.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        title_layout.addWidget(title_text, 1)
+        self.minimize_button = QPushButton("—")
+        self.maximize_button = QPushButton("□")
+        self.close_button = QPushButton("×")
+        for button in (self.minimize_button, self.maximize_button, self.close_button):
+            button.setFixedSize(30, 26)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setStyleSheet("QPushButton { background: transparent; border: 0; border-radius: 6px; padding: 0; } QPushButton:hover { background: rgba(255,255,255,28); }")
+            title_layout.addWidget(button)
+        self.minimize_button.clicked.connect(self.showMinimized)
+        self.maximize_button.clicked.connect(self._toggle_maximized)
+        self.close_button.clicked.connect(self.close)
+        layout.addWidget(title_bar)
+
         head = QHBoxLayout()
         mark = QLabel("F")
         mark.setObjectName("Mark")
@@ -266,14 +321,24 @@ class SplashScreen(QWidget):
         progress_row.addWidget(self.percent)
         layout.addLayout(progress_row)
         bottom = QHBoxLayout()
-        self.note_label = QLabel("Перед установкой архив будет проверен по контрольной сумме SHA-256.")
+        self.note_label = QLabel("Проверяем целостность загруженного обновления.")
         self.note_label.setObjectName("Sub")
         self.note_label.setWordWrap(True)
         bottom.addWidget(self.note_label, 1)
         self.cancel_button = QPushButton("Отмена")
         self.cancel_button.clicked.connect(self.cancelled.emit)
         bottom.addWidget(self.cancel_button)
+        self.resize_grip = QSizeGrip(self)
+        bottom.addWidget(self.resize_grip, 0, Qt.AlignBottom | Qt.AlignRight)
         layout.addLayout(bottom)
+
+    def _toggle_maximized(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.maximize_button.setText("□")
+        else:
+            self.showMaximized()
+            self.maximize_button.setText("❐")
 
     def finish_and_close(self):
         self._allow_close = True

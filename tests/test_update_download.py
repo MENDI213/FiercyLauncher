@@ -29,6 +29,24 @@ class FakeResponse:
             yield self.payload[offset:offset + chunk_size]
 
 
+class FakeSession:
+    """Persistent-session stand-in which delegates to the patched requests.get."""
+    def __init__(self):
+        self.headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def get(self, url, **kwargs):
+        return update_download.requests.get(url, **kwargs)
+
+    def close(self):
+        pass
+
+
 def test_parallel_range_download_and_sha256(monkeypatch, tmp_path: Path):
     payload = (b"FiercyLauncher-range-download-test-" * 180_000)[:7_500_000]
     total = len(payload)
@@ -50,6 +68,7 @@ def test_parallel_range_download_and_sha256(monkeypatch, tmp_path: Path):
         return FakeResponse(payload, 200, {"Content-Length": str(total)}, request_url)
 
     monkeypatch.setattr(update_download.requests, "get", fake_get)
+    monkeypatch.setattr(update_download.requests, "Session", FakeSession)
     target = tmp_path / "release.zip"
     result = update_download.download_verified_asset(
         url,
@@ -168,10 +187,12 @@ def test_parallel_download_reports_actual_worker_count(monkeypatch, tmp_path: Pa
     total = len(payload)
     url = "https://github.com/MENDI213/FiercyLauncher/releases/download/v9.9.9/test.zip"
     labels = []
+    requested_ranges = []
 
     def fake_get(request_url, headers=None, **_kwargs):
         range_header = (headers or {}).get("Range", "")
         if range_header:
+            requested_ranges.append(range_header)
             match = re.fullmatch(r"bytes=(\d+)-(\d+)", range_header)
             assert match
             start, end = map(int, match.groups())
@@ -185,6 +206,7 @@ def test_parallel_download_reports_actual_worker_count(monkeypatch, tmp_path: Pa
         return FakeResponse(payload, 200, {"Content-Length": str(total)}, request_url)
 
     monkeypatch.setattr(update_download.requests, "get", fake_get)
+    monkeypatch.setattr(update_download.requests, "Session", FakeSession)
     target = tmp_path / "parallel.zip"
     update_download.download_verified_asset(
         url,
@@ -195,4 +217,7 @@ def test_parallel_download_reports_actual_worker_count(monkeypatch, tmp_path: Pa
         progress=lambda _done, _total, _speed, label: labels.append(label),
     )
     assert target.read_bytes() == payload
-    assert any("24 потоков" in label for label in labels)
+    assert any("8 потоков" in label for label in labels)
+    # One single-byte probe plus every block is fetched through the dynamic queue.
+    expected_blocks = (total + 2 * 1024 * 1024 - 1) // (2 * 1024 * 1024)
+    assert len(requested_ranges) == expected_blocks + 1

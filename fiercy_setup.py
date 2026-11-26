@@ -163,7 +163,7 @@ class InstallWorker(QThread):
                         f"{done / 1048576:.1f} / {effective_total / 1048576:.1f} МБ"
                         if effective_total else f"{done / 1048576:.1f} МБ"
                     )
-                    is_parallel = "Быстрая" in detail
+                    is_parallel = "потоков" in detail.lower() and "один поток" not in detail.lower()
                     mode = "Параллельная загрузка" if is_parallel else "Загрузка"
                     streams = "8 потоков" if is_parallel else "1 поток"
                     self.progress.emit(
