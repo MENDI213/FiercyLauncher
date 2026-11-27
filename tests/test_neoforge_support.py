@@ -9,6 +9,9 @@ from neoforge_support import (
     find_installed_neoforge_version,
     neoforge_installer_url,
     neoforge_maven_coordinates,
+    neoforge_bmclapi_list_url,
+    neoforge_bmclapi_installer_url,
+    extract_neoforge_versions,
 )
 
 
@@ -62,15 +65,19 @@ def test_minimal_launcher_profiles_is_created_and_preserved(tmp_path: Path):
     path, created = ensure_launcher_profiles(tmp_path)
     data = json.loads(path.read_text("utf-8"))
     assert created is True
-    assert data["profiles"] == {}
+    assert "fiercylauncher-bootstrap" in data["profiles"]
+    assert data["selectedProfile"] == "fiercylauncher-bootstrap"
+    assert data["profiles"]["fiercylauncher-bootstrap"]["lastVersionId"] == "latest-release"
     assert data["version"] == 3
-    data["profiles"]["existing"] = {"name": "Existing", "type": "custom"}
+    data["profiles"]["existing"] = {"name": "Existing", "type": "custom", "lastVersionId": "1.21.1"}
     path.write_text(json.dumps(data), "utf-8")
 
     second_path, created_again = ensure_launcher_profiles(tmp_path)
     assert second_path == path
     assert created_again is False
-    assert json.loads(path.read_text("utf-8"))["profiles"]["existing"]["name"] == "Existing"
+    stored = json.loads(path.read_text("utf-8"))
+    assert stored["profiles"]["existing"]["name"] == "Existing"
+    assert "fiercylauncher-bootstrap" in stored["profiles"]
 
 
 def test_does_not_overwrite_corrupted_launcher_profiles(tmp_path: Path):
@@ -95,3 +102,19 @@ def test_installed_profile_is_validated_against_selected_minecraft(tmp_path: Pat
     assert find_installed_neoforge_version(tmp_path, "1.21.1", "21.1.267") == version_id
     with pytest.raises(RuntimeError, match="Minecraft 1.20.1"):
         find_installed_neoforge_version(tmp_path, "1.20.1", "21.1.267")
+
+
+def test_bmclapi_neoforge_endpoints_are_version_scoped():
+    assert neoforge_bmclapi_list_url("1.21.1").endswith("/neoforge/list/1.21.1")
+    assert neoforge_bmclapi_installer_url("1.21.1", "21.1.268").endswith(
+        "/neoforge/version/21.1.268/download/installer.jar"
+    )
+
+
+def test_bmclapi_neoforge_list_extracts_only_matching_minecraft_version():
+    payload = json.dumps([
+        {"rawVersion": "21.1.268", "version": "21.1.268", "mcversion": "1.21.1"},
+        {"rawVersion": "20.4.237", "version": "20.4.237", "mcversion": "1.20.4"},
+        {"rawVersion": "21.1.269-beta", "version": "21.1.269-beta", "mcversion": "1.21.1"},
+    ])
+    assert extract_neoforge_versions(payload, "1.21.1") == ["21.1.268"]

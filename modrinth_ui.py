@@ -1,12 +1,14 @@
 """Небольшой карточный каталог Modrinth и окно подробностей проекта."""
 from __future__ import annotations
 
+import re
+
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QByteArray, QBuffer, QIODevice, QSize
 from PyQt5.QtWidgets import QScroller
-from PyQt5.QtGui import QPixmap, QImageReader
+from PyQt5.QtGui import QPixmap, QImageReader, QFontMetrics
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QFrame, QTextBrowser, QTextEdit, QScrollArea, QWidget, QDialogButtonBox, QSizePolicy,
+    QFrame, QTextBrowser, QTextEdit, QScrollArea, QWidget, QDialogButtonBox, QSizePolicy, QProgressBar,
 )
 from ui_controls import WheelSafeComboBox, SmoothScrollArea
 
@@ -52,10 +54,19 @@ def _number(value) -> str:
 
 
 class ModrinthProjectCard(QFrame):
+    """Compact, colourful project card with a fixed layout for every download state."""
+
     detailsRequested = pyqtSignal(dict)
     installRequested = pyqtSignal(dict)
     removeRequested = pyqtSignal(dict)
     cancelRequested = pyqtSignal(dict)
+
+    TYPE_META = {
+        "mod": ("МОД", "mod"),
+        "modpack": ("СБОРКА", "modpack"),
+        "resourcepack": ("РЕСУРСПАК", "resourcepack"),
+        "shader": ("ШЕЙДЕР", "shader"),
+    }
 
     def __init__(self, project: dict, parent=None):
         super().__init__(parent)
@@ -63,21 +74,25 @@ class ModrinthProjectCard(QFrame):
         self._requires_loader = bool(project.get("requires_loader"))
         self._state = "idle"
         self._left_press_inside = False
+        self._full_status_message = ""
+        project_type = str(project.get("project_type", "mod")).lower()
+        type_label, type_property = self.TYPE_META.get(project_type, ("ПРОЕКТ", "mod"))
         self.setObjectName("ModrinthProjectCard")
+        self.setProperty("projectType", type_property)
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumWidth(205)
-        self.setMinimumHeight(184)
+        self.setMinimumWidth(264)
+        self.setFixedHeight(268)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(11, 10, 11, 10)
+        root.setContentsMargins(13, 12, 13, 12)
         root.setSpacing(6)
 
         header = QHBoxLayout()
-        header.setSpacing(10)
+        header.setSpacing(11)
         self.icon = QLabel("F")
         self.icon.setObjectName("ModrinthProjectIcon")
-        self.icon.setFixedSize(48, 48)
+        self.icon.setFixedSize(60, 60)
         self.icon.setAlignment(Qt.AlignCenter)
         self.icon.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         header.addWidget(self.icon, 0, Qt.AlignTop)
@@ -87,113 +102,195 @@ class ModrinthProjectCard(QFrame):
         self.title = QLabel(str(project.get("title", "Без названия")))
         self.title.setObjectName("ModrinthProjectTitle")
         self.title.setWordWrap(True)
-        self.title.setMaximumHeight(40)
+        self.title.setFixedHeight(46)
+        self.title.setToolTip(str(project.get("title", "Без названия")))
         self.title.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         identity.addWidget(self.title)
-        author = str(project.get("author", ""))
-        project_type = str(project.get("project_type", "mod")).lower()
-        type_names = {"mod": "МОД", "resourcepack": "РЕСУРСПАК", "shader": "ШЕЙДЕР", "modpack": "СБОРКА"}
-        self.author_label = QLabel(" · ".join(part for part in (author, type_names.get(project_type, "MODRINTH")) if part))
-        self.author_label.setObjectName("ModrinthProjectMeta")
-        self.author_label.setWordWrap(True)
+
+        author = str(project.get("author", "Неизвестный автор")).strip() or "Неизвестный автор"
+        self.author_label = QLabel(author)
+        self.author_label.setObjectName("ModrinthProjectAuthor")
+        self.author_label.setWordWrap(False)
         self.author_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        identity.addWidget(self.author_label)
+        self._full_author = author
+        self.author_label.setToolTip(author)
+
+        self.type_badge = QLabel(type_label)
+        self.type_badge.setObjectName("ModrinthProjectTypeBadge")
+        self.type_badge.setAlignment(Qt.AlignCenter)
+        self.type_badge.setFixedHeight(19)
+        self.type_badge.setMaximumWidth(102)
+        identity_meta = QHBoxLayout()
+        identity_meta.setSpacing(7)
+        identity_meta.addWidget(self.author_label, 1)
+        identity_meta.addWidget(self.type_badge, 0, Qt.AlignRight)
+        identity.addLayout(identity_meta)
         header.addLayout(identity, 1)
         root.addLayout(header)
 
-        description = str(project.get("description", "")).strip() or "Описание пока не добавлено."
-        self.description = QLabel(description)
+        full_description = str(project.get("description", "")).strip() or "Описание проекта пока не добавлено."
+        short_description = full_description
+        if len(short_description) > 190:
+            short_description = short_description[:187].rstrip() + "…"
+        self.description = QLabel(short_description)
         self.description.setObjectName("ModrinthProjectDescription")
         self.description.setWordWrap(True)
-        self.description.setMaximumHeight(42)
+        self.description.setMinimumHeight(62)
+        self.description.setMaximumHeight(70)
+        self.description.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.description.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.description.setToolTip(full_description)
         root.addWidget(self.description, 1)
 
         categories = [str(value).replace("_", " ").strip() for value in (project.get("categories", []) or [])]
-        self.categories = QLabel("  ·  ".join(categories[:3]))
+        self.categories = QLabel("  ·  ".join(value for value in categories[:3] if value))
         self.categories.setObjectName("ModrinthProjectTags")
-        self.categories.setMaximumHeight(20)
+        self.categories.setWordWrap(True)
+        self.categories.setMinimumHeight(22)
+        self.categories.setMaximumHeight(28)
         self.categories.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.categories.setToolTip(" · ".join(categories))
         root.addWidget(self.categories)
 
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("ModrinthProjectState")
+        self.status_label.setFixedHeight(16)
+        self.status_label.setWordWrap(False)
+        self.status_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        root.addWidget(self.status_label)
+        # Always reserve the same 5px row. A progress state never changes card height.
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("ModrinthCardProgress")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(4)
+        self.progress_bar.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        root.addWidget(self.progress_bar)
+
         footer = QHBoxLayout()
-        footer.setSpacing(6)
-        self.stats = QLabel(f"↓ {_number(project.get('downloads'))}    ♥ {_number(project.get('follows'))}")
+        footer.setSpacing(8)
+        self.stats = QLabel(f"↓ {_number(project.get('downloads'))}   ♥ {_number(project.get('follows'))}")
         self.stats.setObjectName("ModrinthProjectMeta")
+        self.stats.setMinimumWidth(0)
+        self.stats.setWordWrap(False)
         self.stats.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         footer.addWidget(self.stats, 1)
-        self.state_label = QLabel("")
-        self.state_label.setObjectName("ModrinthProjectState")
-        self.state_label.setMinimumWidth(1)
-        self.state_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        footer.addWidget(self.state_label)
-        self.install_button = QPushButton("Скачать")
-        self.install_button.setObjectName("PrimaryButton")
-        self.install_button.setCursor(Qt.PointingHandCursor)
-        self.install_button.setMinimumWidth(84)
-        self.install_button.setMaximumHeight(34)
-        self.install_button.setFocusPolicy(Qt.NoFocus)
-        self.install_button.clicked.connect(lambda: self.installRequested.emit(dict(self.project)))
-        footer.addWidget(self.install_button)
-        self.remove_button = QPushButton("Удалить")
-        self.remove_button.setObjectName("DangerButton")
-        self.remove_button.setCursor(Qt.PointingHandCursor)
-        self.remove_button.setMinimumWidth(72)
-        self.remove_button.setMaximumHeight(34)
-        self.remove_button.setFocusPolicy(Qt.NoFocus)
-        self.remove_button.clicked.connect(lambda: self.removeRequested.emit(dict(self.project)))
-        self.remove_button.hide()
-        footer.addWidget(self.remove_button)
-        self.cancel_button = QPushButton("Отменить")
-        self.cancel_button.setObjectName("DangerButton")
-        self.cancel_button.setCursor(Qt.PointingHandCursor)
-        self.cancel_button.setMinimumWidth(76)
-        self.cancel_button.setMaximumHeight(34)
-        self.cancel_button.setFocusPolicy(Qt.NoFocus)
-        self.cancel_button.clicked.connect(lambda: self.cancelRequested.emit(dict(self.project)))
-        self.cancel_button.hide()
-        footer.addWidget(self.cancel_button)
+
+        self.action_button = QPushButton("Скачать")
+        self.action_button.setObjectName("ModrinthActionButton")
+        self.action_button.setCursor(Qt.PointingHandCursor)
+        self.action_button.setFixedSize(112, 39)
+        self.action_button.setFocusPolicy(Qt.NoFocus)
+        self.action_button.clicked.connect(self._dispatch_action)
+        footer.addWidget(self.action_button, 0, Qt.AlignRight)
         root.addLayout(footer)
+
+        # Compatibility aliases: callers that update the previous state-specific
+        # buttons still address the same fixed-size action widget.
+        self.install_button = self.action_button
+        self.remove_button = self.action_button
+        self.cancel_button = self.action_button
         self.set_install_state("idle")
+
+    def _dispatch_action(self):
+        project = dict(self.project)
+        if self._state == "installed":
+            self.removeRequested.emit(project)
+        elif self._state in {"queued", "downloading", "cancelling"}:
+            self.cancelRequested.emit(project)
+        else:
+            self.installRequested.emit(project)
+
+    def _elide_status(self, message: str):
+        self._full_status_message = str(message or "")
+        clean = self._full_status_message.replace("\n", " ").strip()
+        # Never show a generated JAR filename inside a compact card. It can be
+        # longer than the whole footer and makes the layout look broken.
+        if re.search(r"\.jar(?:\b|$|[.])", clean, flags=re.IGNORECASE):
+            clean = "Скачивание файла" if self._state == "downloading" else "Подготовка файла"
+            percent = re.search(r"(?<!\d)(\d{1,3})%", self._full_status_message)
+            if percent and self._state == "downloading":
+                clean += f" · {min(100, int(percent.group(1)))}%"
+        if self._state == "idle":
+            clean = "Открыть описание · версии · галерею"
+        elif self._state == "queued":
+            clean = "В очереди на установку"
+        elif self._state == "installed":
+            clean = "Установлено в выбранную сборку"
+        elif self._state == "cancelling":
+            clean = "Остановка загрузки…"
+        elif self._state == "failed" and not clean:
+            clean = "Не удалось установить · нажми «Повторить»"
+        metrics = QFontMetrics(self.status_label.font())
+        self.status_label.setText(metrics.elidedText(clean, Qt.ElideRight, max(80, self.status_label.width())))
+        self.status_label.setToolTip(self._full_status_message or clean)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if all(hasattr(self, name) for name in ("status_label", "author_label", "stats")):
+            self._elide_status(self._full_status_message)
+            author_metrics = QFontMetrics(self.author_label.font())
+            self.author_label.setText(author_metrics.elidedText(
+                self._full_author, Qt.ElideRight, max(48, self.author_label.width())))
+            full_stats = f"↓ {_number(self.project.get('downloads'))}   ♥ {_number(self.project.get('follows'))}"
+            self.stats.setText(QFontMetrics(self.stats.font()).elidedText(
+                full_stats, Qt.ElideRight, max(30, self.stats.width())))
+            self.stats.setToolTip(full_stats)
 
     def set_install_state(self, state: str, message: str = ""):
         state = str(state or "idle")
         self._state = state
         labels = {
             "idle": "Скачать",
-            "queued": "В очереди…",
-            "downloading": "Скачивание…",
-            "installed": "Установлено",
+            "queued": "Убрать",
+            "downloading": "Отменить",
+            "cancelling": "Остановка…",
+            "installed": "Удалить",
             "failed": "Повторить",
         }
-        self.install_button.setText(labels.get(state, "Скачать"))
-        button_names = {
-            "idle": "PrimaryButton",
+        object_names = {
+            "idle": "ModrinthActionButton",
             "queued": "ModrinthQueuedButton",
             "downloading": "ModrinthDownloadingButton",
+            "cancelling": "ModrinthQueuedButton",
             "installed": "ModrinthInstalledButton",
             "failed": "ModrinthRetryButton",
         }
-        self.install_button.setObjectName(button_names.get(state, "PrimaryButton"))
-        self.install_button.style().unpolish(self.install_button)
-        self.install_button.style().polish(self.install_button)
-        self.remove_button.setVisible(state == "installed")
-        self.cancel_button.setVisible(state in {"queued", "downloading", "cancelling"})
-        self.cancel_button.setText("Остановка…" if state == "cancelling" else
-                                   ("Убрать" if state == "queued" else "Отменить"))
-        self.cancel_button.setEnabled(state != "cancelling")
-        self.install_button.setEnabled(state in {"idle", "failed"} and not self._requires_loader)
-        self.install_button.setToolTip(message or ("Для мода сначала выбери Fabric, Forge, NeoForge или Quilt." if self._requires_loader else ""))
-        self.state_label.setText(message if state in {"queued", "downloading", "failed"} else ("Уже в сборке" if state == "installed" else ""))
-        self.state_label.setToolTip(message)
-        self.state_label.setProperty("state", state)
-        self.state_label.style().unpolish(self.state_label)
-        self.state_label.style().polish(self.state_label)
+        self.action_button.setText(labels.get(state, "Скачать"))
+        self.action_button.setObjectName(object_names.get(state, "ModrinthActionButton"))
+        self.action_button.setEnabled(state != "cancelling" and not (state == "idle" and self._requires_loader))
+        self.action_button.setToolTip(
+            message or ("Для мода сначала выбери Fabric, Forge, NeoForge или Quilt." if self._requires_loader else "")
+        )
+        self.status_label.setProperty("state", state)
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+        self.action_button.style().unpolish(self.action_button)
+        self.action_button.style().polish(self.action_button)
+
+        percent_match = re.search(r"(?<!\d)(\d{1,3})%", str(message or ""))
+        if state == "installed":
+            self.progress_bar.setValue(100)
+        elif percent_match and state in {"queued", "downloading"}:
+            self.progress_bar.setValue(max(0, min(100, int(percent_match.group(1)))))
+        else:
+            self.progress_bar.setValue(0)
+        self.progress_bar.setProperty("state", state)
+        self.progress_bar.style().unpolish(self.progress_bar)
+        self.progress_bar.style().polish(self.progress_bar)
+
+        if state == "idle":
+            self._elide_status("")
+        elif state == "failed" and not message:
+            self._elide_status("Не удалось установить · нажми «Повторить»")
+        else:
+            self._elide_status(message)
 
     def set_icon_bytes(self, payload: bytes):
         pixmap = _safe_pixmap(payload, max_pixels=8_000_000, max_edge=512)
         if not pixmap.isNull():
-            self.icon.setPixmap(pixmap.scaled(48, 48, Qt.KeepAspectRatioByExpanding, Qt.FastTransformation))
+            self.icon.setPixmap(pixmap.scaled(60, 60, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
             self.icon.setText("")
 
     def mousePressEvent(self, event):
@@ -207,6 +304,10 @@ class ModrinthProjectCard(QFrame):
         )
         self._left_press_inside = False
         if should_open:
+            child = self.childAt(event.pos())
+            if child is self.action_button or (child and self.action_button.isAncestorOf(child)):
+                super().mouseReleaseEvent(event)
+                return
             self.detailsRequested.emit(dict(self.project))
             event.accept()
             return
@@ -376,11 +477,13 @@ class ModrinthCatalogWidget(QWidget):
     def _reflow(self):
         self._reflow_pending = False
         width = max(1, self.scroll.viewport().width())
-        if width >= 1180:
+        # Keep card text readable in compact windows. Prefer two roomy columns
+        # over three compressed cards when the catalogue viewport is narrow.
+        if width >= 1460:
             columns = 4
-        elif width >= 800:
+        elif width >= 1000:
             columns = 3
-        elif width >= 520:
+        elif width >= 640:
             columns = 2
         else:
             columns = 1

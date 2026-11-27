@@ -33,7 +33,9 @@ from version import LAUNCHER_NAME, LAUNCHER_VERSION
 from version_metadata import read_version_metadata
 from neoforge_support import (
     neoforge_maven_coordinates, filter_stable_neoforge_versions,
-    neoforge_installer_url, ensure_launcher_profiles, find_installed_neoforge_version,
+    neoforge_installer_url, neoforge_bmclapi_metadata_url, neoforge_bmclapi_list_url,
+    neoforge_bmclapi_installer_url, extract_neoforge_versions,
+    BMCLAPI_BASE, BMCLAPI_MAVEN_MIRROR, ensure_launcher_profiles, find_installed_neoforge_version,
 )
 
 log = logging.getLogger("fiercy.minecraft")
@@ -138,154 +140,214 @@ def _callback(worker: QThread, rate_limiter=None):
     return {"setStatus": status, "setProgress": current, "setMax": maximum}
 
 
-def _download_neoforge_file(url: str, destination: Path, progress=None,
+def _download_neoforge_file(url: str | list[str] | tuple[str, ...], destination: Path, progress=None,
                             cancel_event: threading.Event | None = None,
                             download_control=None, rate_limiter=None) -> Path:
-    """Downloads a NeoForge installer atomically, retries transient network errors.
+    """Download a NeoForge installer from BMCLAPI first, then the official Maven.
 
-    The reported error in earlier logs was a TCP connect timeout, not an invalid
-    Maven path. Use a longer connect timeout, bounded retries, and atomic file
-    replacement so a failed transfer never leaves a partial JAR.
+    The user's logs show that maven.neoforged.net does not establish TCP
+    connections from their network. BMCLAPI mirrors the NeoForge Maven layout
+    and exposes a dedicated installer endpoint. A downloaded JAR is kept only
+    after ZIP validation; partial files are deleted on every failure.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".part")
-    last_error = None
+    urls = [url] if isinstance(url, str) else [str(item) for item in url if item]
+    if not urls:
+        raise RuntimeError("Не задан адрес установщика NeoForge.")
+    errors: list[str] = []
     headers = {"User-Agent": LAUNCHER_NAME, "Accept": "application/java-archive, */*"}
-    for attempt in range(3):
-        if cancel_event is not None and cancel_event.is_set():
-            raise DownloadCancelled("Загрузка NeoForge отменена.")
-        temporary.unlink(missing_ok=True)
-        try:
-            if progress:
-                progress(f"Скачиваем NeoForge: попытка {attempt + 1}/3…")
-            with requests.get(url, stream=True, timeout=(25, 180), headers=headers) as response:
-                response.raise_for_status()
-                content_type = str(response.headers.get("Content-Type", "")).lower()
-                if "text/html" in content_type:
-                    raise RuntimeError("Вместо установщика Maven вернул HTML-страницу.")
-                expected = int(response.headers.get("Content-Length", "0") or 0)
-                if expected and expected > 256 * 1024 * 1024:
-                    raise RuntimeError("Размер установщика NeoForge неожиданно велик.")
-                written = 0
-                started = time.monotonic()
-                last_report = started
-                with temporary.open("wb") as output:
-                    for chunk in response.iter_content(256 * 1024):
-                        if cancel_event is not None and cancel_event.is_set():
-                            raise DownloadCancelled("Загрузка NeoForge отменена.")
-                        if not chunk:
-                            continue
-                        if download_control is not None:
-                            download_control.checkpoint(len(chunk), rate_limiter)
-                        written += len(chunk)
-                        if written > 256 * 1024 * 1024:
-                            raise RuntimeError("Установщик NeoForge превысил лимит 256 МБ.")
-                        output.write(chunk)
-                        now = time.monotonic()
-                        if progress and (now - last_report >= 0.2 or (expected and written >= expected)):
-                            speed = written / max(now - started, 0.001) / 1048576
-                            amount = (f"{written / 1048576:.1f}/{expected / 1048576:.1f} МБ"
-                                      if expected else f"{written / 1048576:.1f} МБ")
-                            pct_label = f"{int(written * 100 / expected)}% · " if expected else ""
-                            progress(f"NeoForge · {pct_label}{amount} · {speed:.2f} МБ/с")
-                            last_report = now
+    for source_url in urls:
+        source_name = "BMCLAPI" if "bmclapi" in source_url.lower() else "официальный Maven NeoForged"
+        for attempt in range(2):
+            if cancel_event is not None and cancel_event.is_set():
+                raise DownloadCancelled("Загрузка NeoForge отменена.")
+            temporary.unlink(missing_ok=True)
+            try:
                 if progress:
-                    elapsed = max(time.monotonic() - started, 0.001)
-                    amount = (f"{written / 1048576:.1f}/{expected / 1048576:.1f} МБ"
-                              if expected else f"{written / 1048576:.1f} МБ")
-                    pct_label = f"100% · " if expected else "Загружено · "
-                    progress(f"NeoForge · {pct_label}{amount} · {written / elapsed / 1048576:.2f} МБ/с")
-                if written < 1024 or not zipfile.is_zipfile(temporary):
-                    raise RuntimeError("Скачанный установщик NeoForge повреждён или это не JAR-файл.")
-            temporary.replace(destination)
-            return destination
-        except DownloadCancelled:
-            temporary.unlink(missing_ok=True)
-            raise
-        except (requests.RequestException, OSError, RuntimeError) as exc:
-            last_error = exc
-            temporary.unlink(missing_ok=True)
-            log.warning("NeoForge installer download attempt %s/3 failed: %s", attempt + 1, exc)
-            if attempt < 2:
-                time.sleep(2 ** (attempt + 1))
-    if isinstance(last_error, requests.exceptions.ConnectTimeout):
-        raise RuntimeError(
-            "Соединение с официальным сервером NeoForge не устанавливается (ConnectTimeout). "
-            "Это не ошибка версии и не отсутствие файла: проверь доступ к maven.neoforged.net, "
-            "VPN/прокси, DNS и сетевой экран. Можно скачать JAR в браузере по официальной ссылке "
-            f"{url} и положить его в папку {destination}. Затем снова нажми «Установить / проверить». "
-            f"Последняя ошибка: {last_error}"
-        )
+                    progress(f"Установщик NeoForge · источник {source_name} · попытка {attempt + 1}/2…")
+                with requests.get(source_url, stream=True, timeout=(12, 120), headers=headers) as response:
+                    response.raise_for_status()
+                    final_url = str(response.url or source_url)
+                    if not final_url.startswith("https://"):
+                        raise RuntimeError("Источник установщика перенаправил на незащищённый HTTP.")
+                    content_type = str(response.headers.get("Content-Type", "")).lower()
+                    if "text/html" in content_type:
+                        raise RuntimeError("Вместо установщика сервер вернул HTML-страницу.")
+                    expected = int(response.headers.get("Content-Length", "0") or 0)
+                    if expected and expected > 256 * 1024 * 1024:
+                        raise RuntimeError("Размер установщика NeoForge неожиданно велик.")
+                    written = 0
+                    started = time.monotonic()
+                    last_report = started
+                    with temporary.open("wb") as output:
+                        for chunk in response.iter_content(256 * 1024):
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise DownloadCancelled("Загрузка NeoForge отменена.")
+                            if not chunk:
+                                continue
+                            if download_control is not None:
+                                download_control.checkpoint(len(chunk), rate_limiter)
+                            written += len(chunk)
+                            if written > 256 * 1024 * 1024:
+                                raise RuntimeError("Установщик NeoForge превысил лимит 256 МБ.")
+                            output.write(chunk)
+                            now = time.monotonic()
+                            if progress and (now - last_report >= 0.2 or (expected and written >= expected)):
+                                speed = written / max(now - started, 0.001) / 1048576
+                                amount = (f"{written / 1048576:.1f}/{expected / 1048576:.1f} МБ"
+                                          if expected else f"{written / 1048576:.1f} МБ")
+                                pct_label = f"{int(written * 100 / expected)}% · " if expected else ""
+                                attribution = " · источник BMCLAPI" if source_name == "BMCLAPI" else ""
+                                progress(f"NeoForge · {pct_label}{amount} · {speed:.2f} МБ/с{attribution}")
+                                last_report = now
+                    if written < 1024 or not zipfile.is_zipfile(temporary):
+                        raise RuntimeError("Скачанный установщик NeoForge повреждён или это не JAR-файл.")
+                temporary.replace(destination)
+                if progress:
+                    progress(f"Установщик NeoForge загружен · {source_name} · {written / 1048576:.1f} МБ")
+                return destination
+            except DownloadCancelled:
+                temporary.unlink(missing_ok=True)
+                raise
+            except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+                errors.append(f"{source_name}: {exc}")
+                temporary.unlink(missing_ok=True)
+                log.warning("NeoForge installer source %s attempt %s/2 failed: %s", source_name, attempt + 1, exc)
+                if attempt == 0:
+                    time.sleep(1.5)
     raise RuntimeError(
-        "Не удалось скачать установщик NeoForge с официального Maven после 3 попыток. "
-        "Проверь доступ к maven.neoforged.net, VPN/прокси и настройки антивируса. "
-        f"Официальная ссылка: {url}. Кэш установщика: {destination}. Последняя ошибка: {last_error}"
+        "Не удалось скачать установщик NeoForge ни с зеркала BMCLAPI, ни с официального Maven.\n"
+        + "\n".join(errors[-6:])
     )
+
+
+def _fetch_neoforge_versions(minecraft_version: str) -> tuple[list[str], list[str]]:
+    """Try BMCLAPI metadata first, then the official NeoForged Maven XML."""
+    errors: list[str] = []
+    # This is BMCLAPI's dedicated endpoint for a Minecraft version. Its objects
+    # include both `version` and `rawVersion`, so we can filter against MC exactly.
+    list_url = neoforge_bmclapi_list_url(minecraft_version)
+    try:
+        response = requests.get(list_url, timeout=(8, 20), headers={"User-Agent": LAUNCHER_NAME})
+        response.raise_for_status()
+        versions = extract_neoforge_versions(response.content, minecraft_version)
+        if versions:
+            return versions, errors
+        errors.append("BMCLAPI list: ответ не содержит совместимых стабильных версий")
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        errors.append(f"BMCLAPI list: {exc}")
+
+    # Older BMCLAPI endpoint mirrors the upstream Maven metadata JSON.
+    api_url = neoforge_bmclapi_metadata_url(minecraft_version)
+    try:
+        response = requests.get(api_url, timeout=(8, 20), headers={"User-Agent": LAUNCHER_NAME})
+        response.raise_for_status()
+        versions = extract_neoforge_versions(response.content, minecraft_version)
+        if versions:
+            return versions, errors
+        errors.append("BMCLAPI metadata: ответ не содержит совместимых стабильных версий")
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        errors.append(f"BMCLAPI metadata: {exc}")
+
+    artifact_id, _prefix = neoforge_maven_coordinates(minecraft_version)
+    metadata_url = (
+        f"https://maven.neoforged.net/releases/net/neoforged/{artifact_id}/maven-metadata.xml"
+    )
+    try:
+        response = requests.get(metadata_url, timeout=(8, 20), headers={"User-Agent": LAUNCHER_NAME})
+        response.raise_for_status()
+        metadata_root = ET.fromstring(response.content)
+        remote_versions = [node.text.strip() for node in metadata_root.findall(".//version") if node.text]
+        versions = filter_stable_neoforge_versions(minecraft_version, remote_versions)
+        if versions:
+            return versions, errors
+        errors.append("Официальный Maven: список не содержит совместимых стабильных версий")
+    except (requests.RequestException, ET.ParseError, ValueError, TypeError) as exc:
+        errors.append(f"Официальный Maven: {exc}")
+    return [], errors
+
+
+def _patch_neoforge_maven_urls(game_root: Path, installed_id: str) -> int:
+    """Point NeoForge version-library downloads at BMCLAPI when the official Maven is unreachable."""
+    version_json = game_root / "versions" / installed_id / f"{installed_id}.json"
+    if not version_json.is_file():
+        return 0
+    try:
+        payload = json.loads(version_json.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Не удалось прочитать JSON установленного NeoForge: {exc}") from exc
+
+    official_prefixes = (
+        "https://maven.neoforged.net/releases/",
+        "https://maven.minecraftforge.net/",
+    )
+    replacements = 0
+
+    def visit(value):
+        nonlocal replacements
+        if isinstance(value, dict):
+            for key, child in list(value.items()):
+                if isinstance(child, str) and key.lower() == "url":
+                    for prefix in official_prefixes:
+                        if child.startswith(prefix):
+                            value[key] = BMCLAPI_MAVEN_MIRROR + child[len(prefix):]
+                            replacements += 1
+                            break
+                else:
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    if replacements:
+        temp = version_json.with_suffix(".json.fiercy-tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(version_json)
+        log.info("NeoForge %s: switched %s library URLs to BMCLAPI Maven mirror", installed_id, replacements)
+    return replacements
 
 
 def install_neoforge_client(minecraft_version: str, loader_version: str, game_root: str | Path,
                             java_path: str, progress=None,
                             cancel_event: threading.Event | None = None,
                             download_control=None, rate_limiter=None) -> str:
-    """Install NeoForge through its official installer in a launcher-compatible game root.
-
-    The vanilla parent is installed by InstallMinecraftWorker before this function.
-    LegacyInstaller requires launcher_profiles.json even for third-party launchers;
-    we create a minimal one only when absent and preserve existing user data.
-    """
+    """Install NeoForge using its official LegacyInstaller and BMCLAPI fallback."""
     game_root = Path(game_root).expanduser().resolve()
     game_root.mkdir(parents=True, exist_ok=True)
     version = str(loader_version or "").strip()
-    artifact_id, version_prefix = neoforge_maven_coordinates(minecraft_version)
-    metadata_url = (
-        f"https://maven.neoforged.net/releases/net/neoforged/{artifact_id}/maven-metadata.xml"
-    )
-    headers = {"User-Agent": LAUNCHER_NAME}
 
     if not version:
-        response = None
-        last_error = None
-        for attempt in range(4):
-            try:
-                response = requests.get(metadata_url, timeout=(25, 60), headers=headers)
-                response.raise_for_status()
-                break
-            except requests.RequestException as exc:
-                last_error = exc
-                if attempt < 3:
-                    time.sleep(2 ** (attempt + 1))
-        if response is None:
-            raise RuntimeError(f"Не удалось получить список версий NeoForge с официального Maven: {last_error}")
-        metadata_root = ET.fromstring(response.content)
-        remote_versions = [node.text.strip() for node in metadata_root.findall(".//version") if node.text]
-        candidates = filter_stable_neoforge_versions(minecraft_version, remote_versions)
-        if not candidates:
-            raise RuntimeError(f"Для Minecraft {minecraft_version} не найдено стабильных версий NeoForge.")
-        version = candidates[0]
+        versions, errors = _fetch_neoforge_versions(minecraft_version)
+        if not versions:
+            raise RuntimeError(
+                f"Не удалось получить версии NeoForge для Minecraft {minecraft_version}.\n"
+                + "\n".join(errors)
+            )
+        version = versions[0]
 
-    # Revalidate the selected exact build to prevent installing a wrong MC line.
-    installer_url = neoforge_installer_url(minecraft_version, version)
-    installer_name = installer_url.rsplit("/", 1)[-1]
+    # Validate the selected exact build before any network or filesystem changes.
+    official_installer_url = neoforge_installer_url(minecraft_version, version)
+    artifact_id, _prefix = neoforge_maven_coordinates(minecraft_version)
+    installer_name = official_installer_url.rsplit("/", 1)[-1]
     installer_dir = game_root / ".fiercy" / "installers"
     installer = installer_dir / installer_name
     if not installer.is_file() or not zipfile.is_zipfile(installer):
-        _download_neoforge_file(installer_url, installer, progress, cancel_event,
+        mirror_urls = [
+            neoforge_bmclapi_installer_url(minecraft_version, version),
+            f"{BMCLAPI_MAVEN_MIRROR}net/neoforged/{artifact_id}/{version}/{installer_name}",
+            official_installer_url,
+        ]
+        _download_neoforge_file(mirror_urls, installer, progress, cancel_event,
                                  download_control, rate_limiter)
 
-    launcher_profiles_path = game_root / "launcher_profiles.json"
-    if not launcher_profiles_path.exists():
-        vanilla_launcher = getattr(mll, "vanilla_launcher", None)
-        library_ensure = getattr(vanilla_launcher, "ensure_vanilla_launcher_profiles_exists", None)
-        if callable(library_ensure):
-            # This is the exact helper used by minecraft-launcher-lib's own
-            # NeoForge adapter (it writes the v3 structure expected upstream).
-            library_ensure(str(game_root))
-        else:
-            ensure_launcher_profiles(game_root)
-    launcher_profiles, _created_profile_file = ensure_launcher_profiles(game_root)
+    # LegacyInstaller refuses to run without a real launcher profile. Ensure one
+    # exists without replacing the user's existing profiles/settings.
+    launcher_profiles, created_profile_file = ensure_launcher_profiles(game_root)
     if progress:
-        progress(f"Подготовка каталога Minecraft для установщика NeoForge {version}…")
-        progress(f"Устанавливаем NeoForge {version} официальным установщиком…")
+        progress(f"Подготовка NeoForge {version} · Minecraft {minecraft_version}…")
+        progress("Источник зависимостей: BMCLAPI Maven с резервом на официальный Maven")
 
     installer_java = str(java_path)
     if Path(installer_java).name.lower() == "javaw.exe":
@@ -296,9 +358,10 @@ def install_neoforge_client(minecraft_version: str, loader_version: str, game_ro
     command = [
         installer_java, "-Djava.awt.headless=true", "-Djava.net.preferIPv4Stack=true",
         "-jar", str(installer), "--install-client", str(game_root),
+        "--mirror", BMCLAPI_MAVEN_MIRROR,
     ]
-    log.info("Запуск NeoForge installer: java=%s target=%s mc=%s loader=%s",
-             installer_java, game_root, minecraft_version, version)
+    log.info("Запуск официального NeoForge installer: mc=%s loader=%s root=%s mirror=%s bootstrap_profile=%s",
+             minecraft_version, version, game_root, BMCLAPI_MAVEN_MIRROR, created_profile_file)
     try:
         completed = subprocess.run(
             command, cwd=str(game_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -308,7 +371,7 @@ def install_neoforge_client(minecraft_version: str, loader_version: str, game_ro
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"Установка NeoForge {version} не завершилась за 20 минут. "
-            f"Проверь сеть и лог {game_root / (installer.name + '.log')}"
+            f"Проверь лог установщика {installer.name}.log"
         ) from exc
 
     installer_log = game_root / (installer.name + ".log")
@@ -322,40 +385,31 @@ def install_neoforge_client(minecraft_version: str, loader_version: str, game_ro
             except OSError:
                 pass
         details = "\n".join(part.strip() for part in details_parts if part.strip())[-8000:]
-        raise RuntimeError(
-            "Официальный установщик NeoForge завершился с ошибкой. "
-            "Проверь vanilla-файлы, Java и сетевую доступность Maven.\n" + details
-        )
+        if "maven.neoforged.net" in details.lower() or "connecttimeout" in details.lower():
+            reason = (
+                "NeoForge установщик всё ещё обращается к недоступному официальному Maven, "
+                "несмотря на параметр зеркала. Это сетевой сбой upstream; зеркало BMCLAPI было подключено, "
+                "но текущая сборка установщика не применила его к этому шагу.\n"
+            )
+        elif "launcher profile" in details.lower():
+            reason = "NeoForge не принял bootstrap-профиль лаунчера. Сохранился диагностический лог установщика.\n"
+        else:
+            reason = "Официальный установщик NeoForge завершился с ошибкой.\n"
+        raise RuntimeError(reason + details)
 
-    try:
-        installed_id = find_installed_neoforge_version(game_root, minecraft_version, version)
-    except RuntimeError as exc:
-        details = ""
-        if installer_log.is_file():
-            try:
-                details = installer_log.read_text(encoding="utf-8", errors="replace")[-5000:]
-            except OSError:
-                pass
-        raise RuntimeError(str(exc) + ("\nЛог установщика:\n" + details if details else "")) from exc
+    installed_id = find_installed_neoforge_version(game_root, minecraft_version, version)
+    patched_urls = _patch_neoforge_maven_urls(game_root, installed_id)
 
-    # The official installer should inject a run profile into this file. Confirm
-    # that the profile was actually recorded before exposing the installation.
-    try:
-        launcher_data = json.loads(launcher_profiles.read_text(encoding="utf-8-sig"))
-        profiles = launcher_data.get("profiles", {}) if isinstance(launcher_data, dict) else {}
-        injected = any(
-            isinstance(item, dict) and item.get("lastVersionId") == installed_id
-            for item in profiles.values()
-        ) if isinstance(profiles, dict) else False
-        if not injected:
-            log.warning("NeoForge %s installed; installer did not inject launcher_profiles entry", installed_id)
-    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
-        log.warning("Не удалось проверить запись NeoForge в launcher_profiles.json", exc_info=True)
-
-    log.info("NeoForge installed successfully: minecraft=%s loader=%s profile=%s root=%s",
-             minecraft_version, version, installed_id, game_root)
+    # The installer may create the profile JSON and its processor outputs, while
+    # minecraft-launcher-lib completes Mojang assets/natives and remaining files.
+    # The generated NeoForge Maven URLs are patched to BMCLAPI before this step.
     if progress:
-        progress(f"NeoForge {version} установлен и проверен.")
+        progress(f"Завершаем файлы NeoForge {version}…")
+    # The caller's download callback is used by the completion pass in
+    # install_neoforge_profile(); this function only runs the official installer.
+    log.info("NeoForge install completed: %s (BMCLAPI Maven URLs patched: %s)", installed_id, patched_urls)
+    if progress:
+        progress(f"NeoForge {version} установлен. Проверяем библиотеки…")
     return installed_id
 
 
@@ -370,61 +424,34 @@ def install_neoforge_profile(
     download_control=None,
     rate_limiter=None,
 ) -> str:
-    """Install NeoForge using minecraft-launcher-lib's supported adapter.
+    """Install every NeoForge line through LegacyInstaller, then complete via minecraft-launcher-lib.
 
-    minecraft-launcher-lib 8.x handles standard NeoForge Minecraft lines
-    (1.20.2+): it ensures launcher_profiles.json exists, installs the official
-    installer, then installs the generated child version and inherited files.
-    The library adapter currently normalizes only classic 1.x coordinates, so
-    1.20.1 (the legacy ``net.neoforged:forge`` artifact) and year-based 26.x
-    versions use our Maven-aware fallback followed by the same library version
-    completion step.
+    We intentionally do not call minecraft-launcher-lib's NeoForge adapter: its
+    metadata lookup hits maven.neoforged.net directly (the host that timed out in
+    the user's logs). The official installer is used for all NeoForge lines;
+    minecraft-launcher-lib remains responsible for vanilla libraries/assets and
+    launching the generated version JSON.
     """
     root = Path(game_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    mc_version = str(minecraft_version).strip()
-    selected_loader_version = str(loader_version or "").strip()
-    install_callback = callback or {}
-
-    # Create the exact v3 profile document expected by LegacyInstaller before
-    # entering either route. Existing official-launcher profiles are preserved.
     ensure_launcher_profiles(root)
-
-    use_library_adapter = mc_version.startswith("1.") and mc_version != "1.20.1"
-    if use_library_adapter:
-        if progress:
-            progress("Установка NeoForge через minecraft-launcher-lib…")
-        loader = mll.mod_loader.get_mod_loader("neoforge")
-        try:
-            loader.install(
-                mc_version, str(root),
-                loader_version=selected_loader_version or None,
-                callback=install_callback, java=str(java_path),
-            )
-        except subprocess.CalledProcessError as exc:
-            output = exc.stderr or exc.stdout or b""
-            if isinstance(output, bytes):
-                output = output.decode("utf-8", errors="replace")
-            raise RuntimeError(
-                "Официальный установщик NeoForge, запущенный minecraft-launcher-lib, "
-                "завершился с ошибкой.\n" + str(output)[-8000:]
-            ) from exc
-    else:
-        installed_id = install_neoforge_client(
-            mc_version, selected_loader_version, root, str(java_path), progress, cancel_event,
-            download_control, rate_limiter,
-        )
-        if progress:
-            progress("Проверка библиотек и наследуемых файлов NeoForge…")
-        # The fallback runs the same official installer, then delegates the
-        # generated child version's dependency completion to minecraft-launcher-lib.
-        mll.install.install_minecraft_version(
-            installed_id, str(root), callback=install_callback,
-        )
-
-    return find_installed_neoforge_version(
-        root, mc_version, selected_loader_version,
+    installed_id = install_neoforge_client(
+        str(minecraft_version).strip(), str(loader_version or "").strip(), root,
+        str(java_path), progress, cancel_event, download_control, rate_limiter,
     )
+    if progress:
+        progress("Проверяем библиотеки, natives и ресурсы Minecraft…")
+    # _patch_neoforge_maven_urls ran immediately after installer success. The
+    # normal library installer can now fetch any remaining Maven artifacts via mirror.
+    try:
+        mll.install.install_minecraft_version(
+            installed_id, str(root), callback=callback,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"NeoForge {loader_version} установлен, но не удалось завершить зависимости Minecraft: {exc}"
+        ) from exc
+    return find_installed_neoforge_version(root, str(minecraft_version), str(loader_version or ""))
 
 
 def find_system_java() -> str:
@@ -715,14 +742,45 @@ class VersionListWorker(QThread):
 
 
 class LoaderVersionListWorker(QThread):
-    """Получает официальные стабильные версии Forge/NeoForge/Fabric/Quilt."""
+    """Получает совместимые версии загрузчиков с кэшированием NeoForge."""
     loaded = pyqtSignal(str, str, list)
     failed = pyqtSignal(str, str, str)
 
-    def __init__(self, loader_id: str, minecraft_version: str, parent=None):
+    def __init__(self, loader_id: str, minecraft_version: str, parent=None, cache_root=None):
         super().__init__(parent)
         self.loader_id = str(loader_id).strip().lower()
         self.minecraft_version = str(minecraft_version).strip()
+        self.cache_root = Path(cache_root).expanduser().resolve() if cache_root else (
+            Path.home() / ".fiercylauncher" / "cache"
+        )
+
+    def _neoforge_cache_file(self) -> Path:
+        safe_mc = re.sub(r"[^A-Za-z0-9._-]", "_", self.minecraft_version)
+        return self.cache_root / "neoforge-versions" / f"{safe_mc}.json"
+
+    def _read_neoforge_cache(self) -> list[str]:
+        path = self._neoforge_cache_file()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            versions = data.get("versions", []) if isinstance(data, dict) else []
+            return filter_stable_neoforge_versions(self.minecraft_version, versions)
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def _write_neoforge_cache(self, versions: list[str], source: str) -> None:
+        path = self._neoforge_cache_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps({
+                "minecraft_version": self.minecraft_version,
+                "versions": versions,
+                "source": source,
+                "updated_at": time.time(),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp.replace(path)
+        except OSError:
+            log.warning("Не удалось сохранить кэш версий NeoForge: %s", path, exc_info=True)
 
     def run(self):
         try:
@@ -737,20 +795,21 @@ class LoaderVersionListWorker(QThread):
                     self.loaded.emit(self.loader_id, self.minecraft_version, list(cached[1]))
                     return
             if self.loader_id == "neoforge":
-                # NeoForge uses two Maven coordinate families: 1.20.1 is
-                # net.neoforged:forge, while 1.20.2+ and modern 26.x versions
-                # use net.neoforged:neoforge. Keep discovery aligned with install.
-                artifact_id, _prefix = neoforge_maven_coordinates(self.minecraft_version)
-                metadata_url = (
-                    f"https://maven.neoforged.net/releases/net/neoforged/{artifact_id}/maven-metadata.xml"
-                )
-                metadata = requests.get(
-                    metadata_url, timeout=(8, 25), headers={"User-Agent": LAUNCHER_NAME},
-                )
-                metadata.raise_for_status()
-                root = ET.fromstring(metadata.content)
-                remote_versions = [node.text.strip() for node in root.findall(".//version") if node.text]
-                cleaned = filter_stable_neoforge_versions(self.minecraft_version, remote_versions)
+                cleaned: list[str] = []
+                errors: list[str] = []
+                versions, errors = _fetch_neoforge_versions(self.minecraft_version)
+                if versions:
+                    cleaned = versions
+                    source = "official" if any(error.startswith("Официальный Maven:") for error in errors) else "BMCLAPI"
+                    self._write_neoforge_cache(cleaned, source)
+                else:
+                    cleaned = self._read_neoforge_cache()
+                    if cleaned:
+                        log.warning("NeoForge metadata unavailable; using cached versions for %s: %s",
+                                    self.minecraft_version, " | ".join(errors))
+                    else:
+                        raise RuntimeError("Не удалось получить версии NeoForge ни с BMCLAPI, ни с официального Maven. "
+                                           + " | ".join(errors))
             else:
                 loader = mll.mod_loader.get_mod_loader(self.loader_id)
                 try:

@@ -105,13 +105,39 @@ QComboBoxPrivateContainer {
     padding: 0;
     margin: 0;
 }
-QFrame#ModrinthProjectCard { background: #131b2a; border: 1px solid #27344b; border-radius: 13px; }
-QFrame#ModrinthProjectCard:hover { background: #182337; border-color: #6656a4; }
-QLabel#ModrinthProjectIcon { background: #202b40; border: 1px solid #3c4a63; border-radius: 12px; color: #c6b8ff; font-size: 20pt; font-weight: 900; }
-QLabel#ModrinthProjectTitle { color: #f5f7ff; font-size: 11pt; font-weight: 800; }
-QLabel#ModrinthProjectDescription { color: #aab6cb; font-size: 9pt; }
-QLabel#ModrinthProjectMeta { color: #8998b2; font-size: 8pt; }
-QLabel#ModrinthProjectTags { color: #9b87f3; font-size: 8pt; font-weight: 700; }
+QFrame#ModrinthProjectCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #30253e, stop:0.48 #202a3f, stop:1 #183b46);
+    border: 1px solid #665076; border-left: 6px solid #b58cff; border-radius: 18px;
+}
+QFrame#ModrinthProjectCard:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #42304f, stop:0.52 #27374d, stop:1 #1c4b55);
+    border: 1px solid #ffad86; border-left: 6px solid #ff9b70;
+}
+QFrame#ModrinthProjectCard[projectType="modpack"] { border-left-color: #ffb34f; background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #453126,stop:1 #2d2941); }
+QFrame#ModrinthProjectCard[projectType="resourcepack"] { border-left-color: #4fe0b0; background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #1e403b,stop:1 #202f43); }
+QFrame#ModrinthProjectCard[projectType="shader"] { border-left-color: #69b9ff; background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #243b5b,stop:1 #292942); }
+QLabel#ModrinthProjectIcon { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8457bd, stop:1 #217f9b); border: 1px solid #a98ad0; border-radius: 16px; color: #ffffff; font-size: 21pt; font-weight: 900; }
+QLabel#ModrinthProjectTitle { color: #ffffff; font-size: 12pt; font-weight: 900; }
+QLabel#ModrinthProjectAuthor { color: #d5c9e0; font-size: 9pt; }
+QLabel#ModrinthProjectDescription { color: #f0eaf4; font-size: 9.5pt; }
+QLabel#ModrinthProjectMeta { color: #d4c7df; font-size: 9pt; font-weight: 800; }
+QLabel#ModrinthProjectTags { color: #ffd09b; font-size: 9pt; font-weight: 900; }
+QLabel#ModrinthProjectTypeBadge { background: #55396a; border: 1px solid #a57ac2; border-radius: 8px; color: #ffe5ff; padding: 2px 8px; font-size: 8pt; font-weight: 900; }
+QFrame#ModrinthProjectCard[projectType="modpack"] QLabel#ModrinthProjectTypeBadge { background: #68451f; border-color: #d19a48; color: #ffe5b7; }
+QFrame#ModrinthProjectCard[projectType="resourcepack"] QLabel#ModrinthProjectTypeBadge { background: #195849; border-color: #43bf9b; color: #c8ffec; }
+QFrame#ModrinthProjectCard[projectType="shader"] QLabel#ModrinthProjectTypeBadge { background: #214b76; border-color: #61a9e8; color: #d8efff; }
+QLabel#ModrinthProjectState { color: #ded5e8; font-size: 8.5pt; font-weight: 800; }
+QLabel#ModrinthProjectState[state="queued"] { color: #ffd27e; font-weight: 900; }
+QLabel#ModrinthProjectState[state="downloading"] { color: #a9e9ff; font-weight: 900; }
+QLabel#ModrinthProjectState[state="installed"] { color: #8df0bb; font-weight: 900; }
+QLabel#ModrinthProjectState[state="failed"] { color: #ffadb5; font-weight: 900; }
+QPushButton#ModrinthActionButton { color: #fff; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8759d8, stop:1 #ed668f); border: 1px solid #dda0ff; border-radius: 12px; padding: 8px 13px; font-weight: 900; }
+QPushButton#ModrinthActionButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #a477eb, stop:1 #ff8eaa); }
+QPushButton#ModrinthQueuedButton, QPushButton#ModrinthDownloadingButton { color: #fff0c7; background: #5a4024; border: 1px solid #d29b50; border-radius: 12px; padding: 8px 13px; font-weight: 900; }
+QPushButton#ModrinthInstalledButton { color: #d4ffeb; background: #1c624a; border: 1px solid #55c48e; border-radius: 12px; padding: 8px 13px; font-weight: 900; }
+QPushButton#ModrinthRetryButton { color: #ffe1e5; background: #653247; border: 1px solid #df7890; border-radius: 12px; padding: 8px 13px; font-weight: 900; }
+QProgressBar#ModrinthCardProgress { background: #47394f; border: 0; border-radius: 3px; }
+QProgressBar#ModrinthCardProgress::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8e67f4, stop:0.55 #df70bc, stop:1 #ffb269); border-radius: 3px; }
 QWidget#ModrinthCatalogContent { background: transparent; }
 QScrollArea#ModrinthCatalogScroll { background: transparent; border: 0; }
 QLabel#ModrinthGalleryImage { background: #101827; border: 1px solid #303d54; border-radius: 9px; color: #8d9ab2; }
@@ -131,11 +157,3 @@ QListWidget#ProfileModsList::item:selected { background: #202b40; border-radius:
 QPushButton#InstalledModTitle { color: #e8edf8; font-weight: 700; }
 QPushButton#InstalledModTitle:hover { color: #a99aff; }
 
-QLabel#ModrinthProjectState[state="queued"] { color: #d7ba79; font-weight: 700; font-size: 8pt; }
-QLabel#ModrinthProjectState[state="downloading"] { color: #83c7ff; font-weight: 700; font-size: 8pt; }
-QLabel#ModrinthProjectState[state="installed"] { color: #7de0a5; font-weight: 700; font-size: 8pt; }
-QLabel#ModrinthProjectState[state="failed"] { color: #ff8c96; font-weight: 700; font-size: 8pt; }
-QPushButton#ModrinthQueuedButton { color: #f2d38a; background: #39301d; border: 1px solid #67552b; border-radius: 10px; padding: 9px 12px; font-weight: 800; }
-QPushButton#ModrinthDownloadingButton { color: #b5dcff; background: #1b3045; border: 1px solid #315d82; border-radius: 10px; padding: 9px 12px; font-weight: 800; }
-QPushButton#ModrinthInstalledButton { color: #9ce6b8; background: #173a2b; border: 1px solid #2d7650; border-radius: 10px; padding: 9px 12px; font-weight: 800; }
-QPushButton#ModrinthRetryButton { color: #ffb0b7; background: #44232c; border: 1px solid #8c3d4c; border-radius: 10px; padding: 9px 12px; font-weight: 800; }

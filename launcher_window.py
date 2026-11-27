@@ -39,7 +39,6 @@ from toast_notifications import ToastNotification
 from path_utils import migrate_game_data, resolve_launcher_root, selected_base_from_root
 from version import LAUNCHER_NAME, LAUNCHER_VERSION, GITHUB_API_LATEST
 from ui_controls import (WheelSafeComboBox, WheelSafeFontComboBox, WheelSafeSpinBox, WheelSafeSlider, WheelSafeTabBar, SmoothScrollArea, SmoothListWidget)
-from profile_dialog import CreateProfileDialog
 from mod_service import (list_mod_files, set_mod_enabled, add_local_mods,
                          ModrinthSearchWorker, ModrinthProjectDetailsWorker,
                          ModrinthImageWorker, ModrinthInstallWorker)
@@ -1040,6 +1039,62 @@ class LauncherWindow(QMainWindow):
         self.profile_workspace.addTab(catalog_page, "Каталог")
         self.profile_workspace.addTab(scroll, "Мои сборки")
 
+        # Profile creation is an ordinary workspace page, not a native modal dialog.
+        create_page = QWidget()
+        create_page.setObjectName("CreateProfilePage")
+        create_layout = QVBoxLayout(create_page)
+        create_layout.setContentsMargins(12, 12, 12, 12)
+        create_layout.setSpacing(12)
+        create_card, create_box = self._section_card(
+            "Создание игровой сборки",
+            "Выбери Minecraft и загрузчик. Новая сборка получит отдельную папку с понятным названием внутри instances."
+        )
+        create_grid = QGridLayout()
+        create_grid.setHorizontalSpacing(14)
+        create_grid.setVerticalSpacing(12)
+        create_grid.addWidget(QLabel("Название сборки"), 0, 0)
+        self.create_profile_name_edit = QLineEdit()
+        self.create_profile_name_edit.setPlaceholderText("Например: Fiercy Survival")
+        self.create_profile_name_edit.setMinimumHeight(42)
+        create_grid.addWidget(self.create_profile_name_edit, 0, 1)
+        create_grid.addWidget(QLabel("Minecraft"), 1, 0)
+        self.create_profile_version_combo = WheelSafeComboBox()
+        self.create_profile_version_combo.setMinimumHeight(42)
+        create_grid.addWidget(self.create_profile_version_combo, 1, 1)
+        create_grid.addWidget(QLabel("Загрузчик"), 2, 0)
+        self.create_profile_loader_combo = WheelSafeComboBox()
+        self.create_profile_loader_combo.setMinimumHeight(42)
+        for label, value in (("Vanilla", "vanilla"), ("Fabric", "fabric"), ("Forge", "forge"),
+                             ("NeoForge", "neoforge"), ("Quilt", "quilt")):
+            self.create_profile_loader_combo.addItem(label, value)
+        create_grid.addWidget(self.create_profile_loader_combo, 2, 1)
+        create_grid.addWidget(QLabel("Версия загрузчика"), 3, 0)
+        self.create_profile_loader_version_combo = WheelSafeComboBox()
+        self.create_profile_loader_version_combo.setMinimumHeight(42)
+        self.create_profile_loader_version_combo.addItem("Последняя стабильная", "")
+        self.create_profile_loader_version_combo.setEnabled(False)
+        create_grid.addWidget(self.create_profile_loader_version_combo, 3, 1)
+        create_box.addLayout(create_grid)
+        self.create_profile_status = QLabel("Для Vanilla отдельная версия загрузчика не требуется.")
+        self.create_profile_status.setObjectName("Muted")
+        self.create_profile_status.setWordWrap(True)
+        create_box.addWidget(self.create_profile_status)
+        create_buttons = QHBoxLayout()
+        create_buttons.addStretch(1)
+        create_cancel = self._button("Назад")
+        create_cancel.clicked.connect(lambda: self._switch_profile_workspace(0))
+        create_buttons.addWidget(create_cancel)
+        create_submit = self._button("Создать сборку", primary=True)
+        create_submit.clicked.connect(self._submit_create_profile)
+        create_buttons.addWidget(create_submit)
+        create_box.addLayout(create_buttons)
+        create_layout.addWidget(create_card)
+        create_layout.addStretch(1)
+        self.profile_workspace.addTab(create_page, "Создание")
+        self.create_profile_version_combo.currentIndexChanged.connect(self._load_create_profile_loader_versions)
+        self.create_profile_loader_combo.currentIndexChanged.connect(self._load_create_profile_loader_versions)
+        self.create_profile_name_edit.returnPressed.connect(self._submit_create_profile)
+
         shell = QWidget()
         shell_layout = QVBoxLayout(shell)
         shell_layout.setContentsMargins(0, 0, 0, 0)
@@ -1067,6 +1122,7 @@ class LauncherWindow(QMainWindow):
             return
         self.profile_workspace.setCurrentIndex(index)
         for button, active in ((self.workspace_catalog_button, index == 0),
+                               (self.workspace_create_button, index == 2),
                                (self.workspace_mine_button, index == 1)):
             button.setProperty("active", active)
             button.setChecked(active)
@@ -1082,6 +1138,8 @@ class LauncherWindow(QMainWindow):
         elif index == 1:
             self._refresh_profiles()
             self._refresh_mod_list()
+        elif index == 2:
+            self._refresh_create_profile_versions()
 
     def _update_ram_label(self, gigabytes: int):
         if hasattr(self, "ram_value_label"):
@@ -2928,7 +2986,7 @@ class LauncherWindow(QMainWindow):
             self.profile_setup_status.setText("Сначала выбери версию Minecraft.")
             return
         self.profile_setup_status.setText(f"Загружаем версии {loader.title()} для Minecraft {minecraft}…")
-        worker = LoaderVersionListWorker(loader, minecraft, self)
+        worker = LoaderVersionListWorker(loader, minecraft, self, self.game_root / ".fiercy" / "cache")
         worker.loaded.connect(self._profile_loader_versions_loaded)
         worker.failed.connect(self._profile_loader_versions_failed)
         self._retain_worker(worker)
@@ -3020,15 +3078,103 @@ class LauncherWindow(QMainWindow):
             )
 
     def create_profile(self):
+        """Open the embedded profile-creation page; no separate dialog is shown."""
         if not self.versions:
             self._notify("Список Minecraft ещё загружается", "Подожди, пока обновится список официальных версий.",
                          "info")
             return
-        dialog = CreateProfileDialog(self._visible_minecraft_versions(), self)
-        dialog.setStyleSheet(self.styleSheet())
-        if dialog.exec_() != dialog.Accepted:
+        if self.profile_workspace.currentIndex() == 2:
+            self._refresh_create_profile_versions()
+        else:
+            self._switch_profile_workspace(2)
+        self.create_profile_name_edit.setFocus()
+
+    def _refresh_create_profile_versions(self):
+        if not hasattr(self, "create_profile_version_combo"):
             return
-        values = dialog.values()
+        current = str(self.create_profile_version_combo.currentData() or "")
+        versions = self._visible_minecraft_versions()
+        self.create_profile_version_combo.blockSignals(True)
+        self.create_profile_version_combo.clear()
+        for item in versions:
+            version_id = str(item.get("id", ""))
+            if version_id:
+                self.create_profile_version_combo.addItem(self._version_display_name(item), version_id)
+        preferred = current or str(self.remote_versions_config.get("recommended_minecraft_version", ""))
+        index = self.create_profile_version_combo.findData(preferred)
+        if index < 0:
+            release = next((item for item in versions if str(item.get("type", "")).lower() == "release"), None)
+            fallback = str(release.get("id", "")) if release else (str(versions[0].get("id", "")) if versions else "")
+            index = self.create_profile_version_combo.findData(fallback)
+        if index >= 0:
+            self.create_profile_version_combo.setCurrentIndex(index)
+        self.create_profile_version_combo.blockSignals(False)
+        self._load_create_profile_loader_versions()
+
+    def _load_create_profile_loader_versions(self, *_args):
+        if not hasattr(self, "create_profile_loader_combo"):
+            return
+        loader = str(self.create_profile_loader_combo.currentData() or "vanilla")
+        minecraft = str(self.create_profile_version_combo.currentData() or "")
+        combo = self.create_profile_loader_version_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Последняя стабильная", "")
+        combo.blockSignals(False)
+        if loader == "vanilla":
+            combo.setEnabled(False)
+            self.create_profile_status.setText("Vanilla не требует отдельной версии загрузчика.")
+            return
+        combo.setEnabled(False)
+        self.create_profile_status.setText(f"Загружаем версии {loader.title()} для Minecraft {minecraft}…")
+        from minecraft_service import LoaderVersionListWorker
+        worker = LoaderVersionListWorker(loader, minecraft, self, self.game_root / ".fiercy" / "cache")
+        worker.loaded.connect(self._create_profile_loader_versions_loaded)
+        worker.failed.connect(self._create_profile_loader_versions_failed)
+        self._retain_worker(worker)
+        self._create_profile_loader_worker = worker
+        worker.start()
+
+    def _create_profile_loader_versions_loaded(self, loader: str, minecraft: str, versions: list):
+        if loader != str(self.create_profile_loader_combo.currentData() or "vanilla"):
+            return
+        if minecraft != str(self.create_profile_version_combo.currentData() or ""):
+            return
+        combo = self.create_profile_loader_version_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Последняя стабильная", "")
+        for version in versions:
+            combo.addItem(str(version), str(version))
+        combo.blockSignals(False)
+        combo.setEnabled(True)
+        if versions:
+            self.create_profile_status.setText(f"Найдено стабильных версий: {len(versions)}. Можно выбрать конкретную или оставить последнюю.")
+        else:
+            self.create_profile_status.setText("Список версий пуст. Можно оставить «Последняя стабильная» — лаунчер попробует получить актуальную версию при установке.")
+
+    def _create_profile_loader_versions_failed(self, loader: str, minecraft: str, message: str):
+        if loader != str(self.create_profile_loader_combo.currentData() or "vanilla"):
+            return
+        if minecraft != str(self.create_profile_version_combo.currentData() or ""):
+            return
+        self.create_profile_loader_version_combo.setEnabled(True)
+        self.create_profile_status.setText(f"Не удалось получить список версий. Можно попробовать последнюю стабильную. {message}")
+
+    def _submit_create_profile(self):
+        values = {
+            "name": self.create_profile_name_edit.text().strip(),
+            "minecraft_version": str(self.create_profile_version_combo.currentData() or ""),
+            "loader": str(self.create_profile_loader_combo.currentData() or "vanilla"),
+            "loader_version": str(self.create_profile_loader_version_combo.currentData() or ""),
+        }
+        if not values["name"]:
+            self.create_profile_status.setText("Укажи название сборки.")
+            self.create_profile_name_edit.setFocus()
+            return
+        if not values["minecraft_version"]:
+            self.create_profile_status.setText("Выбери версию Minecraft.")
+            return
         try:
             profile = self.profile_manager.create(
                 values["name"], description="Игровая сборка FiercyLauncher",
@@ -3038,13 +3184,14 @@ class LauncherWindow(QMainWindow):
             self._set_active_profile(profile["id"])
             self._switch_profile_workspace(1)
             self.profile_setup_status.setText(
-                "Сборка создана. Версия Minecraft и загрузчик закреплены. При необходимости можно выбрать другую "
-                "версию этого загрузчика, затем установить сборку."
+                "Сборка создана. Версия Minecraft и загрузчик закреплены. Установи сборку или добавь в неё контент."
             )
             self._notify("Сборка создана", f"«{values['name']}» · Minecraft {values['minecraft_version']} · "
-                         f"{values['loader'].title()}. Параметры Minecraft и загрузчик изменить нельзя.",
+                         f"{values['loader'].title()}. Параметры Minecraft и загрузчик закреплены.",
                          "success", 6500)
+            self.create_profile_name_edit.clear()
         except ProfileError as exc:
+            self.create_profile_status.setText(str(exc))
             self._notify("Не удалось создать сборку", str(exc), "error")
 
     # -------------------------- Mods and imports --------------------------

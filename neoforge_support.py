@@ -8,12 +8,87 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 from packaging.version import InvalidVersion, Version
 
 NEOFORGED_MAVEN = "https://maven.neoforged.net/releases/net/neoforged"
+BMCLAPI_BASE = "https://bmclapi2.bangbang93.com"
+BMCLAPI_MAVEN_MIRROR = f"{BMCLAPI_BASE}/maven/"
+
+
+def neoforge_bmclapi_list_url(minecraft_version: str) -> str:
+    """BMCLAPI's documented list endpoint, scoped to one Minecraft version."""
+    from urllib.parse import quote
+    value = str(minecraft_version or "").strip()
+    neoforge_maven_coordinates(value)  # validate before building a request URL
+    return f"{BMCLAPI_BASE}/neoforge/list/{quote(value, safe='.') }"
+
+
+def neoforge_bmclapi_metadata_url(minecraft_version: str) -> str:
+    """BMCLAPI's Maven metadata endpoint for the correct NeoForge coordinate family."""
+    artifact, _prefix = neoforge_maven_coordinates(minecraft_version)
+    return (f"{BMCLAPI_BASE}/neoforge/meta/api/maven/details/releases/"
+            f"net/neoforged/{artifact}")
+
+
+def neoforge_bmclapi_installer_url(minecraft_version: str, loader_version: str) -> str:
+    """BMCLAPI's official NeoForge installer redirect endpoint."""
+    neoforge_installer_url(minecraft_version, loader_version)  # validates exact MC/version pairing
+    from urllib.parse import quote
+    return f"{BMCLAPI_BASE}/neoforge/version/{quote(str(loader_version), safe='.-')}/download/installer.jar"
+
+
+def extract_neoforge_versions(payload: str | bytes, minecraft_version: str) -> list[str]:
+    """Extract exact version strings from BMCLAPI's JSON metadata response."""
+    if isinstance(payload, bytes):
+        text = payload.decode("utf-8", errors="replace")
+    else:
+        text = str(payload or "")
+    candidates: set[str] = set()
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = None
+
+    def collect(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(key, str):
+                    candidates.add(key)
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+        elif isinstance(value, str):
+            candidates.add(value.strip())
+
+    if parsed is not None:
+        if isinstance(parsed, list):
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                mc = str(item.get("mcversion") or item.get("minecraftVersion") or "").strip()
+                if mc and mc != str(minecraft_version).strip():
+                    continue
+                version = str(item.get("version") or "").strip()
+                raw_version = str(item.get("rawVersion") or "").strip()
+                if version:
+                    candidates.add(version)
+                if raw_version:
+                    # Some legacy objects encode `1.20.1-47.1.12` in rawVersion.
+                    prefix = str(minecraft_version).strip() + "-"
+                    candidates.add(raw_version[len(prefix):] if raw_version.startswith(prefix) else raw_version)
+        else:
+            collect(parsed)
+    # Some BMCLAPI metadata shapes embed version coordinates in strings or keys.
+    candidates.update(re.findall(
+        r"(?<![A-Za-z0-9])(?:1\.20\.1-)?[0-9]+\.[0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9.]+)?",
+        text,
+    ))
+    return filter_stable_neoforge_versions(minecraft_version, candidates)
 
 
 def neoforge_maven_coordinates(minecraft_version: str) -> tuple[str, str]:
@@ -82,16 +157,17 @@ def neoforge_installer_url(minecraft_version: str, loader_version: str) -> str:
 
 
 def ensure_launcher_profiles(game_root: str | Path) -> tuple[Path, bool]:
-    """Ensure the official installer has a launcher_profiles.json to inject into.
+    """Create a launcher_profiles.json containing a usable vanilla bootstrap profile.
 
-    Existing valid profile data is preserved. An existing malformed file is not
-    overwritten: this avoids destroying a user's launcher configuration.
-    Returns (path, created_by_us).
+    LegacyInstaller checks for at least one vanilla launcher profile. An empty
+    ``profiles`` object is not enough and produces the familiar "run the launcher
+    first" error. Existing user profiles are preserved; a temporary Fiercy profile
+    is added only when no usable profile exists.
     """
     root = Path(game_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     path = root / "launcher_profiles.json"
-
+    created = not path.exists()
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -102,25 +178,54 @@ def ensure_launcher_profiles(game_root: str | Path) -> tuple[Path, bool]:
             ) from exc
         if not isinstance(data, dict):
             raise RuntimeError(f"Файл {path} должен содержать JSON-объект. Он не был изменён.")
-        profiles = data.get("profiles")
-        if profiles is None:
-            data["profiles"] = {}
-        elif not isinstance(profiles, dict):
-            raise RuntimeError(f"В файле {path} поле 'profiles' имеет неверный формат. Файл не изменён.")
-        # Do not rewrite an already valid file unnecessarily.
-        if profiles is None:
-            _atomic_json_write(path, data)
-        return path, False
+    else:
+        data = {}
 
-    # LegacyInstaller only requires a JSON object with a profiles object; it adds
-    # the NeoForge entry itself after processor execution.
-    minimal = {
-        "profiles": {},
-        "settings": {},
-        "version": 3,
-    }
-    _atomic_json_write(path, minimal)
-    return path, True
+    profiles = data.get("profiles")
+    if profiles is None:
+        profiles = {}
+        data["profiles"] = profiles
+    elif not isinstance(profiles, dict):
+        raise RuntimeError(f"В файле {path} поле 'profiles' имеет неверный формат. Файл не изменён.")
+
+    has_usable_profile = any(
+        isinstance(profile, dict)
+        and str(profile.get("name") or "").strip()
+        and (str(profile.get("lastVersionId") or "").strip()
+             or str(profile.get("type") or "").strip())
+        for profile in profiles.values()
+    )
+    if not has_usable_profile:
+        profile_id = "fiercylauncher-bootstrap"
+        suffix = 2
+        while profile_id in profiles:
+            profile_id = f"fiercylauncher-bootstrap-{suffix}"
+            suffix += 1
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"
+        profiles[profile_id] = {
+            "name": "FiercyLauncher",
+            "type": "custom",
+            "created": now,
+            "lastUsed": now,
+            "lastVersionId": "latest-release",
+            "gameDir": str(root),
+            "javaArgs": "",
+        }
+        data["selectedProfile"] = profile_id
+    else:
+        selected = str(data.get("selectedProfile") or "")
+        if selected not in profiles:
+            selected = next((key for key, value in profiles.items()
+                             if isinstance(value, dict) and value.get("name")), "")
+            if selected:
+                data["selectedProfile"] = selected
+
+    data.setdefault("settings", {})
+    if not isinstance(data["settings"], dict):
+        data["settings"] = {}
+    data["version"] = max(3, int(data.get("version", 0) or 0))
+    _atomic_json_write(path, data)
+    return path, created
 
 
 def _atomic_json_write(path: Path, payload: dict) -> None:
